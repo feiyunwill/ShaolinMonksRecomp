@@ -9,7 +9,7 @@ from recomp_game_fixture import write_zip64_offsets
 
 
 def main():
-    with tempfile.TemporaryDirectory(prefix='shaolin-zip64-') as temporary:
+    with tempfile.TemporaryDirectory(prefix='openshao-zip64-') as temporary:
         root = Path(temporary)
         files = {'one.txt': b'first', 'two.txt': b'second'}
         write_zip64_offsets(root / 'valid.zip', files)

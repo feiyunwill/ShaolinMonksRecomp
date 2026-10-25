@@ -1,6 +1,6 @@
 #include "linux/vk/vk_shader.h"
 
-// the HLSL parts of glslang's interface are declared only with ENABLE_HLSL, which its build does not export
+// glslang requires ENABLE_HLSL for these declarations but does not export it.
 #ifndef ENABLE_HLSL
 #define ENABLE_HLSL 1
 #endif
@@ -26,7 +26,7 @@ void InitOnce() {
     std::call_once(once, [] { glslang::InitializeProcess(); });
 }
 
-}  // namespace
+}
 
 bool Compile(const std::string& hlsl, const char* entry, Stage stage, std::vector<uint32_t>& spirv, std::string& error) {
     InitOnce();
@@ -45,7 +45,7 @@ bool Compile(const std::string& hlsl, const char* entry, Stage stage, std::vecto
     shader.setShiftBinding(glslang::EResUbo, kUboBase);
     shader.setShiftBinding(glslang::EResTexture, kTextureBase);
     shader.setShiftBinding(glslang::EResSampler, kSamplerBase);
-    // stage inputs and outputs take locations in declaration order: every stage declares the same VOut
+    // Every stage declares the same VOut so declaration order matches interface locations.
     shader.setAutoMapLocations(true);
     const auto messages =
         EShMessages(EShMsgSpvRules | EShMsgVulkanRules | EShMsgReadHlsl | EShMsgHlslOffsets);
@@ -67,4 +67,4 @@ bool Compile(const std::string& hlsl, const char* entry, Stage stage, std::vecto
     return !spirv.empty();
 }
 
-}  // namespace vkshader
+}

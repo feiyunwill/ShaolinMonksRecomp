@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 
-namespace shaolin::language {
+namespace openshao::language {
 struct PackStats {
     ArchiveStats archive;
     unsigned movies = 0;
@@ -16,6 +16,8 @@ bool ApplyFontResource(std::span<uint8_t> memory, uint32_t address, std::span<co
                        std::span<const uint8_t> replacement, std::string& error);
 bool Mount(const std::filesystem::path& pack, std::span<const uint8_t> original_xbe,
            const SourceRead& read, const SourceSize& size, std::string& error);
+bool MountPacks(std::span<const PackSelection> packs,std::span<const uint8_t> original_xbe,
+                const SourceRead& read,const SourceSize& size,bool translated_credits,std::string& error);
 bool MountPacks(std::span<const std::filesystem::path> packs, std::span<const uint8_t> original_xbe,
                 const SourceRead& read, const SourceSize& size, bool translated_credits, std::string& error);
 bool ValidateMovies(std::string& error);

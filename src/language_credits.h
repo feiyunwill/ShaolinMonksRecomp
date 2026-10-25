@@ -1,6 +1,6 @@
 #pragma once
 
-namespace shaolin::language {
+namespace openshao::language {
 // True only after the selected pack's resources have been validated and loaded.
 bool CreditsEnabled();
 }

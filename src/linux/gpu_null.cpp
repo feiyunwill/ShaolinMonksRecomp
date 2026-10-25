@@ -1,5 +1,3 @@
-// A renderer that draws nothing. Used for background diagnostics and when the
-// PC has no usable Vulkan device; the game keeps running and logs its frames.
 #include "gpu/backend.h"
 #include "core/log.h"
 
@@ -25,7 +23,7 @@ public:
 private:
     uint64_t presents_ = 0;
 };
-}  // namespace
+}
 
 std::unique_ptr<Backend> CreateNullBackend() { return std::make_unique<NullBackend>(); }
-}  // namespace gpu
+}

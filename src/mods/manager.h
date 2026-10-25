@@ -4,7 +4,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
-namespace shaolin::mods {
+namespace openshao::mods {
 struct Installed { Manifest mod; bool enabled=true; };
 std::vector<Installed> ReadInstalled(const std::filesystem::path& root);
 void ValidateEnabled(const std::vector<Installed>& installed);

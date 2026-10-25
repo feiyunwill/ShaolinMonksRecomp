@@ -4,16 +4,14 @@
 #include "game_preferences.h"
 #include <bit>
 
-// The original text tables use en=0, fr=1, it=2, de=3, es=4 with RET 0.
-X86_FUNC(sub_0010F0E0) {
-    kernel::Return(ctx, shaolin::launcher::Language(), 0);
-}
-
-void shaolin::preferences::Apply(X86Context& ctx, uint8_t*) {
+void openshao::preferences::Apply(X86Context& ctx, uint8_t*) {
     static bool applied = false;
     const auto& settings = launcher::Current();
     if (applied || !settings.original_override) return;
     applied = true;
+    ApplyNow(ctx,settings);
+}
+void openshao::preferences::ApplyNow(X86Context& ctx,const launcher::Settings& settings) {
     const auto saved = ctx;
     const int volumes[] = {settings.music_volume, settings.effects_volume, settings.speech_volume};
     for (unsigned i = 0; i < 3; ++i) {
@@ -33,4 +31,11 @@ void shaolin::preferences::Apply(X86Context& ctx, uint8_t*) {
     LOGR("Original options applied: music=%d effects=%d speech=%d brightness=%d rounds=%d time=%d camera_reverse=%d",
          settings.music_volume, settings.effects_volume, settings.speech_volume, settings.brightness,
          settings.versus_rounds, settings.versus_time, int(settings.camera_reverse));
+}
+void openshao::preferences::ReadActive(launcher::Settings& s) {
+    auto volume=[](uint32_t address){return std::clamp(int(std::lround(std::bit_cast<float>(kernel::R32(address))*100)),0,100);};
+    s.music_volume=volume(0x4DF5C4);s.effects_volume=volume(0x4DF5C8);s.speech_volume=volume(0x4DF5CC);s.brightness=volume(0x4DF5C0);
+    s.versus_rounds=kernel::G<uint8_t>(0x4DF5D1)?1:3;
+    const auto time=kernel::G<uint8_t>(0x4DF5D2);s.versus_time=time==0?120:time==1?180:0;
+    s.camera_reverse=kernel::G<uint8_t>(0x4DF5D3)!=0;
 }

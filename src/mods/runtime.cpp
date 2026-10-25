@@ -1,7 +1,7 @@
 #include "runtime.h"
 #include "kernel/memory.h"
 #include "core/log.h"
-namespace shaolin::mods {
+namespace openshao::mods {
 namespace {
 std::vector<RoutineScript> scripts;
 RoutineEngine engine;

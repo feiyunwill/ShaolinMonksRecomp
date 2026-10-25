@@ -6,7 +6,7 @@
 #include <fstream>
 
 int main() {
-    using namespace shaolin::language;
+    using namespace openshao::language;
     unsigned failures = 0;
     const auto check = [&](bool pass, const char* message) { if (!pass) { ++failures; std::cerr << message << '\n'; } };
     VirtualFile file;
@@ -33,7 +33,7 @@ int main() {
     std::array<uint8_t, 4> bytes{}; size_t count = 99;
     check(!broken.Read(0, bytes, count) && count == 0, "Source failures must not report a successful transfer");
     const auto path = std::filesystem::temp_directory_path() /
-        ("shaolin-reader-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        ("openshao-reader-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     { std::ofstream stream(path, std::ios::binary); stream << "voice"; }
     std::vector<ReadAt> voices;
     bool all_read = true;

@@ -10,7 +10,7 @@
 
 namespace fs = std::filesystem;
 using Bytes = std::vector<uint8_t>;
-using namespace shaolin::language;
+using namespace openshao::language;
 
 static void Check(bool condition, const char* message) {
     if (!condition) throw std::runtime_error(message);
@@ -68,7 +68,7 @@ struct Fixture {
     fs::path root;
     std::map<std::string, Bytes> source;
     Fixture() {
-        root = fs::temp_directory_path() / ("shaolin-language-archive-test-" +
+        root = fs::temp_directory_path() / ("openshao-language-archive-test-" +
             std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
         fs::create_directories(root / "pack/gamedata");
         fs::create_directories(root / "pack/audio/voices");

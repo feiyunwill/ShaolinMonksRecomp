@@ -56,7 +56,7 @@ def main():
             if owner.value == process.pid and not user.IsWindowVisible(hwnd) and actions:
                 name = ctypes.create_unicode_buffer(256)
                 user.GetClassNameW(hwnd, name, len(name))
-                if name.value == 'ShaolinMonksRecomp' and time.monotonic() - began >= actions[0][0]:
+                if name.value == 'OpenShao' and time.monotonic() - began >= actions[0][0]:
                     _, key, down = actions.pop(0)
                     if not user.PostMessageW(hwnd, 0x100 if down else 0x101, key, 0):
                         visible.append(int(hwnd))  # fail the isolated run on a rejected message
@@ -80,11 +80,11 @@ def main():
     assert 'd3d: Reset complete' in text, 'Startup Reset did not complete: ' + text[-5000:]
     assert 'indirect call to 000F1A07 has no recompiled function' not in text, 'The registered thread callback is missing from the dispatch table'
     assert code == 7, f'The startup exited before the controlled watchdog: {code:#x}; see {folder / "native.log"}'
-    assert 'shaolin input: open port=0' in text, 'The game never opened the connected virtual controller'
-    assert 'shaolin input: state port=0' in text, 'The game never read its virtual controller'
+    assert 'openshao input: open port=0' in text, 'The game never opened the connected virtual controller'
+    assert 'openshao input: state port=0' in text, 'The game never read its virtual controller'
     if args.start:
         assert 'buttons=0010' in text, 'START did not reach the game controller API'
-        assert 'shaolin audio: amplitude envelope OFF' in text and 'shaolin audio: pitch=' in text
+        assert 'openshao audio: amplitude envelope OFF' in text and 'openshao audio: pitch=' in text
         assert not actions, 'The scheduled test inputs did not all run'
     if args.accept:
         assert 'A=255' in text, 'Accept did not reach the game controller API'

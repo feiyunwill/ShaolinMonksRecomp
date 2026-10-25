@@ -5,7 +5,7 @@
 #include <variant>
 #include <vector>
 #include <cstdint>
-namespace shaolin::mods {
+namespace openshao::mods {
 struct Json {
     using Object=std::map<std::string,Json>;
     using Array=std::vector<Json>;

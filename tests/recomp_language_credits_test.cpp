@@ -32,7 +32,7 @@ void Line(const char* value) {
 }
 }
 
-namespace shaolin::language { bool CreditsEnabled() { return enabled; } }
+namespace openshao::language { bool CreditsEnabled() { return enabled; } }
 
 // These stubs model the three original call boundaries, not an Xbox game run.
 X86_FUNC(__imp__sub_000EBD00) {

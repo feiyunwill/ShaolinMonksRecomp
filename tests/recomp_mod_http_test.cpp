@@ -5,9 +5,9 @@
 #include <iostream>
 namespace fs=std::filesystem;
 int main(){
-    const auto root=fs::temp_directory_path()/("shaolin-http-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    const auto root=fs::temp_directory_path()/("openshao-http-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     try{
-        using namespace shaolin::mods;
+        using namespace openshao::mods;
         fs::create_directory(root);
         const char* url="https://raw.githubusercontent.com/tukaani-project/xz-embedded/ae63ae3a36ed01724674e8f3d750dc47bf125410/COPYING";
         Download(url,root/"license",1024*1024);

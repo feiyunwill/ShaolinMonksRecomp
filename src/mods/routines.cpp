@@ -15,7 +15,7 @@ extern "C" {
 #include <lauxlib.h>
 #include <lualib.h>
 }
-namespace shaolin::mods {
+namespace openshao::mods {
 namespace {
 constexpr size_t ModuleLimit=8*1024*1024,TotalLimit=64*1024*1024;
 constexpr int InstructionLimit=100000;

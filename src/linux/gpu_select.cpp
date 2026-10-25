@@ -1,5 +1,4 @@
-// Renderer choice on Linux: Vulkan, or the null renderer for background
-// diagnostics, SHAOLIN_RENDERER=null, or a PC without a usable Vulkan device.
+// Use the null renderer for background diagnostics or when Vulkan is unavailable.
 #include <cstdlib>
 #include <cstring>
 
@@ -13,14 +12,13 @@ std::unique_ptr<Backend> CreateNullBackend();
 std::unique_ptr<Backend> CreateVulkanBackend();  // null when built without Vulkan
 
 namespace {
-// Vulkan, falling back to the null renderer when it cannot start: the game keeps running and says why
 class Fallback final : public Backend {
 public:
     explicit Fallback(std::unique_ptr<Backend> inner) : inner_(std::move(inner)) {}
     bool Init(uint32_t w, uint32_t h) override {
         if (inner_->Init(w, h)) return true;
         LOGE("gpu: Vulkan could not start; running without a picture");
-        linux_platform::ShowError("Shaolin Monks Recomp",
+        linux_platform::ShowError("OpenShao",
                                   "Vulkan could not start on this PC, so the game has no picture.\n\n"
                                   "Install or update the Vulkan driver for your graphics card (Mesa for AMD and "
                                   "Intel, the NVIDIA driver for NVIDIA) and try again. The log has the details.");
@@ -55,13 +53,13 @@ public:
 private:
     std::unique_ptr<Backend> inner_;
 };
-}  // namespace
+}
 
 std::unique_ptr<Backend> CreateBackend() {
-    const char* choice = std::getenv("SHAOLIN_RENDERER");
-    if (shaolin::options.background || (choice && !std::strcmp(choice, "null"))) return CreateNullBackend();
+    const char* choice = std::getenv("OPENSHAO_RENDERER");
+    if (openshao::options.background || (choice && !std::strcmp(choice, "null"))) return CreateNullBackend();
     if (auto vulkan = CreateVulkanBackend()) return std::make_unique<Fallback>(std::move(vulkan));
     LOGE("gpu: built without Vulkan; running without a picture");
     return CreateNullBackend();
 }
-}  // namespace gpu
+}

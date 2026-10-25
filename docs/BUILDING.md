@@ -1,39 +1,22 @@
 # Building
 
-The build script compiles the game, runs the requested tests and creates a release package.
-The build uses the same SDK revision, game profile and generated code for each target.
+## Requirements
 
-## Required inputs
+All systems:
 
-- Python 3.11 or later and Git.
-- The original USA/Europe `default.xbe`, outside the repository.
-- One of the toolchains below.
+- Python 3.11 or later and Git
+- The original USA/Europe `default.xbe`, kept outside the repository. Its SHA-256 must be
+  `48240902bf4a04eb89376217c529531032d3370749bcce91a194878cc49db74a`.
 
-The supported XBE SHA-256 is:
+Windows (Direct3D 12):
 
-```text
-48240902bf4a04eb89376217c529531032d3370749bcce91a194878cc49db74a
-```
+- Visual Studio 2022 or later with the C++ workload, the Windows SDK, CMake and Ninja
+- [LLVM 21.1.8](https://github.com/llvm/llvm-project/releases/tag/llvmorg-21.1.8) with Clang and LLD
 
-## Toolchains
+Linux (Vulkan):
 
-### Visual Studio
-
-Use this toolchain for the Direct3D 12 executable.
-
-- Visual Studio 2022 or later with the C++ workload and Windows SDK.
-- Visual Studio's CMake and Ninja tools.
-- LLVM 21.1.8 with Clang and LLD.
-
-### System Clang
-
-Use this toolchain for the Vulkan executable on Linux or in WSL.
-
-- CMake 3.25 or later.
-- Clang 18 or later, LLD and Ninja.
-- X11, Wayland and audio development headers.
-
-Install the required packages on Ubuntu or Debian:
+- CMake 3.25 or later, Clang 18 or later, LLD and Ninja
+- On Ubuntu or Debian:
 
 ```sh
 sudo apt install clang lld cmake ninja-build git python3 pkg-config libx11-dev libxext-dev libxrandr-dev \
@@ -42,129 +25,128 @@ sudo apt install clang lld cmake ninja-build git python3 pkg-config libx11-dev l
     libudev-dev libusb-1.0-0-dev
 ```
 
-The script reports missing headers before compilation.
-The executable includes the C++ runtime.
-The script prints the minimum glibc version required by the compiled executable.
-Check that value before you distribute the package.
-
-## SDK
-
-Run these commands from the repository root:
+## Get the source
 
 ```sh
+git clone https://github.com/OAleex/OpenShao.git
+cd OpenShao
 git clone https://github.com/TGP482/XboxXBERecomp.git third_party/XboxXBERecomp
 git -C third_party/XboxXBERecomp checkout 40e9c35451305f09ca9d86f677e4b9c2c37ff26b
 ```
 
-## Compile and test
+## Build
 
-Set the paths below to your local files.
-
-For the Visual Studio toolchain:
+Windows:
 
 ```powershell
 python tools/build_recomp.py --xbe "C:/Games/ShaolinMonks/default.xbe" --sdk third_party/XboxXBERecomp --llvm "C:/Program Files/LLVM" --test
 ```
 
-For the system Clang toolchain:
+Linux:
 
 ```sh
 python3 tools/build_recomp.py --xbe ~/Games/ShaolinMonks/default.xbe --sdk third_party/XboxXBERecomp --test
 ```
 
-The script downloads the pinned dependencies, including Lua for routine mods.
-It loads the Visual Studio environment when that toolchain requires it.
-The `--test` option requires passing tests before packaging.
-Build logs use the repository's `build/` directory.
+The script downloads the pinned dependencies, compiles, runs the tests and writes the package and `checksums.txt` to `dist/`.
+Logs are in `build/`.
 
 | Target | Executable | Package |
 | --- | --- | --- |
-| Direct3D 12 | `build/release/ShaolinMonksRecomp.exe` | `dist/ShaolinMonksRecomp-<version>-Windows-x64.zip` |
-| Vulkan | `build/linux-release/ShaolinMonksRecomp` | `dist/ShaolinMonksRecomp-<version>-Linux-x64.tar.gz` |
+| Windows | `build/release/OpenShao.exe` | `dist/OpenShao-<version>-Windows-x64.zip` |
+| Linux | `build/linux-release/OpenShao` | `dist/OpenShao-<version>-Linux-x64.tar.gz` |
 
-When the source uses a mounted drive under `/mnt/`, build output uses `~/.cache/shaolin-monks-recomp/linux-release`.
-The packages still use the repository's `dist/` directory.
-Each successful build also writes `checksums.txt`.
+The Linux build prints the minimum glibc version of the executable. Check it before you publish a package.
+
+### Options
 
 | Option | Effect |
 | --- | --- |
-| `--configure-only` | Configure without compilation or packaging |
-| `--jobs 2` | Limit compilation to two concurrent processes |
-| `--build-dir <path>` | Select another build directory |
-| `--disc <path>` | Enable real-image startup tests for the Direct3D 12 build |
-| `--linux` | Also build the Vulkan package through WSL after the Direct3D 12 package |
-| `--wsl-distro Ubuntu-24.04` | Select the WSL distribution |
+| `--test` | Run the tests and package only when they pass |
+| `--configure-only` | Configure without compiling or packaging |
+| `--jobs <n>` | Number of parallel compile jobs, 1 to 8 |
+| `--build-dir <path>` | Use another build directory |
+| `--disc <path>` | Add startup tests with a real game image (Windows) |
+| `--linux` | Also build the Linux package in WSL (Windows) |
+| `--wsl-distro <name>` | WSL distribution for `--linux` |
 
-## Additional package through WSL
+### Linux package from Windows
 
-Install WSL from PowerShell:
+1. Run `wsl --install -d Ubuntu-24.04` and restart if asked.
+2. Open Ubuntu, create the user and install the Linux packages above.
+3. Add `--linux` to the Windows build command.
 
-```powershell
-wsl --install -d Ubuntu-24.04
-```
+The WSL build output goes to `~/.cache/openshao/linux-release`. The package still goes to `dist/`.
 
-1. Restart the computer if the installer requests it.
-2. Open Ubuntu from the Start menu.
-3. Create the requested user account.
-4. Install the packages listed under **System Clang**.
-5. Add `--linux` to the build command.
+## Release
 
-```powershell
-python tools/build_recomp.py --xbe "C:/Games/ShaolinMonks/default.xbe" --sdk third_party/XboxXBERecomp --llvm "C:/Program Files/LLVM" --linux --test
-```
+### Repository names
 
-WSL reads the source, SDK and game executable through the mounted drive.
-Its build output uses `~/.cache/shaolin-monks-recomp/linux-release`.
-If this step fails, the first package remains in `dist/`.
-Test the Vulkan package on a system with a working Vulkan driver.
+Publish the application in `OAleex/OpenShao` and the mod catalog in `OAleex/OpenShao-Mods`.
+The updater accepts application downloads from `OAleex/OpenShao/releases/download/`.
+The mod browser reads `OpenShao-Mods/master/mods.json`. Keep that branch available unless the catalog URL changes in a later build.
 
-## Validation and build files
+After renaming a repository on GitHub, update its local `origin` URL.
 
-Automated tests use isolated data and saves.
-Native dialog tests use a private desktop.
-Real-image checks read the original game without changing it.
-The manual menu and Ko-op scripts in `tests/` accept `--help`.
+### Version and packages
 
-Close the game and compiler before you remove a build directory.
-Preserve any custom files in that directory.
-Keep game files, the SDK and LLVM outside `build/`.
+Use `major.minor.patch` for the application version and `v<version>` for its release tag.
+Keep these version fields synchronized before building:
 
-## Release package
+| File | Version fields |
+| --- | --- |
+| `CMakeLists.txt` | `project(OpenShao VERSION ...)` |
+| `resources/app.rc` | `FILEVERSION`, `PRODUCTVERSION`, `FileVersion`, `ProductVersion` |
+| `src/mods/version.h` | `RecompVersion` |
+| `tools/package_release.py` | Default value of `--version` |
 
-To create a package without compilation:
+The build script uses the packager's default version. Changing only the CMake version does not update the package names or mod compatibility version.
 
-```powershell
-python tools/package_release.py --exe build/release/ShaolinMonksRecomp.exe --version 0.2.0
-python tools/package_release.py --exe build/linux-release/ShaolinMonksRecomp --version 0.2.0
-```
+For 0.3.0, use:
 
-Set `--exe` to the compiled executable's path.
-The packager selects the format from the executable.
-Each package contains the executable, `readme.txt` and `licenses/`.
-The `.tar.gz` places those files inside one `ShaolinMonksRecomp` folder.
-The project license uses `licenses/LICENSE.txt`.
+| Release field | Value |
+| --- | --- |
+| Repository | `OAleex/OpenShao` |
+| Tag | `v0.3.0` |
+| Title | `OpenShao 0.3.0` |
+| Attached files | `OpenShao-0.3.0-Windows-x64.zip`, `OpenShao-0.3.0-Linux-x64.tar.gz`, `checksums.txt` |
 
-The explicit package list excludes game files, mods, logs, saves and settings.
-Keep `README.md`, `UPSTREAM.md`, `AGENTS.md` and `docs/` in the source repository.
-Check package contents before publication.
-Provide the corresponding source and required dependency notices with a binary release.
-The project license does not grant rights to the original game or generated translations.
+1. Set all version fields.
+2. Build with `--test` and include both platforms.
+3. Review and commit the exact source used for the builds.
+4. Push that source to the application repository.
+5. Create a draft release with the version tag pointing to that commit.
+6. Attach both packages and the generated `checksums.txt`.
+7. Publish the stable release with **Set as latest release** selected and **This is a pre-release** cleared.
 
-See [language packs](LANGUAGE_PACKS.md) for mod authoring and package instructions.
-See [general mods](MODS.md) for resource formats, dependencies and Lua routine hooks.
-Installed packs use the data folder's `mods/languages/` directory.
+The launcher updates from the latest release and only installs packages whose SHA-256 matches.
+Do not rename the packages.
+Use a higher version for every published update. Replacing assets under the same version does not offer an update to an installation already at that version.
+Use a patch increment for fixes, such as `0.3.1`, and a minor increment for a feature release, such as `0.4.0`.
+Mark preview builds as prereleases. Drafts and prereleases are not offered through the stable latest-release endpoint.
+
+Each package holds the executable, `readme.txt` and `licenses/`. The ZIP puts them at the archive root. The `.tar.gz` puts them in one `OpenShao` folder. Game files, mods, logs, saves and settings are never included.
+Publish the source and the dependency notices with every binary release.
+
+### Mod releases
+
+Mods use their own versions. The builder prints the required tag as `<id>-v<version>` and creates `<id>-<version>.tar.xz`.
+Publish the package in `OpenShao-Mods` before publishing the updated `mods.json` on `master`.
+The catalog's `recomp` field is the minimum supported application version, not the mod's version.
+Follow the [mod publishing instructions](MODS.md#publish-and-update).
 
 ## Source layout
 
 | Directory | Contents |
 | --- | --- |
-| `src/` | Host integration and compatibility code |
-| `src/mods/` | Catalog, downloads, package installation and mod state |
+| `src/` | Host integration, launcher and compatibility code |
+| `src/mods/` | Mod catalog, downloads and installation |
 | `src/linux/` | SDL platform services and the Vulkan renderer |
-| `cmake/` | Shared modules and target build configuration |
+| `cmake/` | Build modules |
 | `config/` | Executable profile and ABI metadata |
-| `resources/` | Application resources and player instructions |
-| `tests/` | Automated and manual checks |
+| `resources/` | Icon, fonts, menu text and the packaged `readme.txt` |
+| `tests/` | Automated checks, and manual scripts that accept `--help` |
 | `tools/` | Build, SDK adaptation and packaging scripts |
-| `docs/` | User and developer instructions |
 | `licenses/` | Dependency licenses and notices |
+
+More developer guides: [mods](MODS.md), [language packs](LANGUAGE_PACKS.md), [menu text](MENU_TEXT.md) and [graphics diagnostics](GRAPHICS_DIAGNOSTICS.md).

@@ -1,7 +1,7 @@
 #include "json.h"
 #include <stdexcept>
 #include <charconv>
-namespace shaolin::mods {
+namespace openshao::mods {
 namespace {
 struct Parser {
     std::string_view input; size_t at=0;

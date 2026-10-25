@@ -16,7 +16,6 @@ constexpr uint32_t kUboBase = 0;
 constexpr uint32_t kTextureBase = 2;
 constexpr uint32_t kSamplerBase = 6;
 
-// false with the compiler's messages in error
 bool Compile(const std::string& hlsl, const char* entry, Stage stage, std::vector<uint32_t>& spirv, std::string& error);
 
-}  // namespace vkshader
+}

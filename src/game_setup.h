@@ -3,7 +3,7 @@
 #include <string>
 #include "game_import.h"
 
-namespace shaolin::setup {
+namespace openshao::setup {
 std::filesystem::path RememberedDisc();
 bool RememberDisc(const std::filesystem::path& disc, std::string& error);
 bool ChooseDisc(std::filesystem::path& disc);

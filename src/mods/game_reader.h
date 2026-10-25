@@ -2,7 +2,7 @@
 #include "catalog.h"
 #include "kernel/disc.h"
 #include <filesystem>
-namespace shaolin::mods {
+namespace openshao::mods {
 class GameReader {
     std::filesystem::path folder_;
     kernel::Disc disc_;

@@ -2,7 +2,7 @@
 #include "cpu/x86_ops.h"
 #include <atomic>
 #include <string_view>
-namespace shaolin::mods {
+namespace openshao::mods {
 struct RoutineRoute {uint32_t limit;const uint8_t* flags;};
 extern std::atomic<const RoutineRoute*> CurrentRoutines;
 void InvokeRouted(uint32_t address,X86Context& ctx,uint8_t* base,X86Func* original);
@@ -17,17 +17,16 @@ inline void RunRoutine(uint32_t address,X86Context& ctx,uint8_t* base,X86Func* o
     else original(ctx,base);
 }
 }
-// Only generated translation units include this header. Strong host overrides
-// retain the SDK definitions and are excluded from mod hook targets.
+// Only generated units include this bridge; strong host overrides cannot be mod hook targets.
 #undef X86_WEAK_FUNC
 #define X86_WEAK_FUNC(name,impl) \
     extern "C" __attribute__((weak,noinline)) void name(X86Context& __restrict ctx,uint8_t* base) { \
-        ::shaolin::mods::RunRoutine(::shaolin::mods::FunctionAddress(#name),ctx,base,impl); \
+        ::openshao::mods::RunRoutine(::openshao::mods::FunctionAddress(#name),ctx,base,impl); \
     }
 #undef X86_TRACED_FUNC
 #define X86_TRACED_FUNC(name,impl,va) \
     extern "C" __attribute__((weak,noinline)) void name(X86Context& __restrict ctx,uint8_t* base) { \
         const auto caller=x86_trace(ctx,va,0); \
-        ::shaolin::mods::RunRoutine(va,ctx,base,impl); \
+        ::openshao::mods::RunRoutine(va,ctx,base,impl); \
         x86_trace(ctx,va,caller); \
     }

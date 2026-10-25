@@ -4,7 +4,7 @@
 #include <string>
 #include <cstdint>
 
-namespace shaolin::storage {
+namespace openshao::storage {
 // Preserve the console's serialization. These services only handle host storage.
 inline constexpr uint32_t kIoError = 0xC0000185, kDiskFull = 0xC000007F;
 uint32_t Flush(FILE* file);
@@ -20,6 +20,7 @@ public:
     DirectoryLock(const DirectoryLock&) = delete;
     DirectoryLock& operator=(const DirectoryLock&) = delete;
     ~DirectoryLock();
-    bool Acquire(const std::filesystem::path& root, std::string& error);
+    // `in_use` reports that another process holds the lock, as opposed to a folder that cannot be opened.
+    bool Acquire(const std::filesystem::path& root, std::string& error, bool* in_use = nullptr);
 };
 }

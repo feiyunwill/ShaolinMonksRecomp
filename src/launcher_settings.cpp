@@ -8,16 +8,26 @@
 #include "launcher_settings.h"
 #include "mods/languages.h"
 
-namespace shaolin::launcher {
+namespace openshao::launcher {
 Settings Read(const toml::table& table) {
     Settings s;
     s.language = table["language"].value_or(s.language);
+    // Convert older preferences to a fixed supported voice language before publishing settings.
+    const auto matching=std::find_if(voice_languages.begin(),voice_languages.end(),[&](auto code){return mods::SameLanguage(code,s.language);});
+    const std::string previous_voice=matching==voice_languages.end()?s.voice_language:*matching;
+    s.voice_language=table["voice_language"].value_or(previous_voice);
+    if(s.voice_language=="auto")s.voice_language=previous_voice;
     s.display_mode = table["display_mode"].value_or(s.display_mode);
+    s.aspect_ratio = table["aspect_ratio"].value_or(s.aspect_ratio);
     s.width = table["width"].value_or(s.width); s.height = table["height"].value_or(s.height);
     s.render_percent = table["render_percent"].value_or(s.render_percent);
     s.aniso = table["anisotropic_filtering"].value_or(s.aniso);
     s.master_volume = table["master_volume"].value_or(s.master_volume);
-    s.vsync = table["vsync"].value_or(s.vsync); s.show_fps = table["show_fps"].value_or(s.show_fps);
+    s.vsync = table["vsync"].value_or(s.vsync);
+    // Read prior keys so renaming the preference preserves the user's existing choice.
+    s.bloom_effect = table["bloom_effect"].value_or(table["blur"].value_or(table["bloom"].value_or(s.bloom_effect)));
+    s.show_fps = table["show_fps"].value_or(s.show_fps);
+    s.scorpion_unfiltered = table["enhancements"]["scorpion_unfiltered"].value_or(s.scorpion_unfiltered);
     const auto g = table["game"];
     s.original_override = g["override_original"].value_or(s.original_override);
     s.camera_reverse = g["camera_reverse"].value_or(s.camera_reverse);
@@ -31,27 +41,43 @@ Settings Read(const toml::table& table) {
     s.deadzone = c["deadzone"].value_or(s.deadzone);
     s.rumble = c["rumble"].value_or(s.rumble);
     for (size_t i = 0; i < s.bindings.size(); ++i) s.bindings[i] = c["bindings"][binding_keys[i]].value_or(s.bindings[i]);
+    for(size_t i=0;i<s.keyboard.keys.size();++i)for(unsigned j=0;j<2;++j)
+        s.keyboard.keys[i][j]=table["keyboard"]["bindings"][binding_keys[i]][j].value_or(s.keyboard.keys[i][j]);
     const auto m = table["mouse"];
     s.mouse.sensitivity = m["sensitivity"].value_or(s.mouse.sensitivity);
     s.mouse.invert_y = m["invert_y"].value_or(s.mouse.invert_y);
+    s.mouse.invert_x = m["invert_x"].value_or(s.mouse.invert_x);
+    s.mouse.motion = m["motion"].value_or(s.mouse.motion);
     for (size_t i = 0; i < s.mouse.bindings.size(); ++i)
         s.mouse.bindings[i] = m["bindings"][mouse::button_keys[i]].value_or(s.mouse.bindings[i]);
     return s;
 }
 toml::table Merge(toml::table table, const Settings& s) {
+    table.insert_or_assign("voice_language",s.voice_language);
     table.insert_or_assign("language", s.language); table.insert_or_assign("display_mode", s.display_mode);
+    table.insert_or_assign("aspect_ratio",s.aspect_ratio);
     table.insert_or_assign("width", s.width); table.insert_or_assign("height", s.height);
     table.insert_or_assign("render_percent", s.render_percent); table.insert_or_assign("fps_cap", FrameRate);
     table.insert_or_assign("anisotropic_filtering", s.aniso); table.insert_or_assign("master_volume", s.master_volume);
-    table.insert_or_assign("vsync", s.vsync); table.insert_or_assign("show_fps", s.show_fps);
+    table.insert_or_assign("vsync", s.vsync); table.erase("bloom"); table.erase("blur");
+    table.insert_or_assign("bloom_effect", s.bloom_effect);
+    table.insert_or_assign("show_fps", s.show_fps);
+    auto enhancements = table["enhancements"].as_table() ? *table["enhancements"].as_table() : toml::table{};
+    enhancements.insert_or_assign("scorpion_unfiltered", s.scorpion_unfiltered);
+    table.insert_or_assign("enhancements", enhancements);
     toml::table c, b;
     for (size_t i = 0; i < s.bindings.size(); ++i) b.insert_or_assign(binding_keys[i], s.bindings[i]);
     c.insert_or_assign("deadzone", s.deadzone); c.insert_or_assign("rumble", s.rumble);
     c.insert_or_assign("bindings", b);
     table.insert_or_assign("controller", c);
+    toml::table kb;
+    for(size_t i=0;i<s.keyboard.keys.size();++i)
+        kb.insert_or_assign(binding_keys[i],toml::array{s.keyboard.keys[i][0],s.keyboard.keys[i][1]});
+    table.insert_or_assign("keyboard",toml::table{{"bindings",kb}});
     toml::table m, mb;
     for (size_t i = 0; i < s.mouse.bindings.size(); ++i) mb.insert_or_assign(mouse::button_keys[i], s.mouse.bindings[i]);
     m.insert_or_assign("sensitivity", s.mouse.sensitivity); m.insert_or_assign("invert_y", s.mouse.invert_y);
+    m.insert_or_assign("invert_x",s.mouse.invert_x); m.insert_or_assign("motion",s.mouse.motion);
     m.insert_or_assign("bindings", mb); table.insert_or_assign("mouse", m);
     auto g = table["game"].as_table() ? *table["game"].as_table() : toml::table{};
     g.insert_or_assign("override_original", s.original_override); g.insert_or_assign("camera_reverse", s.camera_reverse);
@@ -62,13 +88,17 @@ toml::table Merge(toml::table table, const Settings& s) {
     return table;
 }
 bool Validate(const Settings& s, std::string& error) {
-    if (!mods::ValidLanguageCode(s.language)) error = "Select a valid game language.";
+    if(std::find(voice_languages.begin(),voice_languages.end(),s.voice_language)==voice_languages.end())error="Select a valid voice language.";
+    else if (!mods::ValidLanguageCode(s.language)) error = "Select a valid game language.";
+    else if(!aspect::Valid(s.aspect_ratio)) error="Select a supported aspect ratio.";
     else if (s.display_mode != "windowed" && s.display_mode != "borderless" && s.display_mode != "fullscreen") error = "Select a display mode.";
     else if ((s.width == 0) != (s.height == 0) || s.width < 0 || s.height < 0 || s.width > 16384 || s.height > 16384 ||
              (s.width && (s.width < 320 || s.height < 240))) error = "Set both resolution fields to zero, or select a resolution from 320 x 240 to 16384 x 16384.";
     else if (s.render_percent < 25 || s.render_percent > 400) error = "Render scale must be from 25 to 400 percent.";
     else if (s.aniso != 0 && s.aniso != 2 && s.aniso != 4 && s.aniso != 8 && s.aniso != 16) error = "Select an anisotropic filtering level.";
     else if (s.master_volume < 0 || s.master_volume > 100) error = "Master volume must be from 0 to 100 percent.";
+    else if (s.mouse.motion!="right_stick" && s.mouse.motion!="left_stick" && s.mouse.motion!="none") error="Select a mouse movement target.";
+    else if (std::any_of(s.keyboard.keys.begin(),s.keyboard.keys.end(),[](const auto& keys){return !bindings::ValidKey(keys[0]) || !bindings::ValidKey(keys[1]);})) error="Choose a supported key. F9 and F10 are reserved.";
     else if (s.mouse.sensitivity < 1 || s.mouse.sensitivity > 300) error = "Mouse sensitivity must be from 1 to 300 percent.";
     else if (std::any_of(s.mouse.bindings.begin(), s.mouse.bindings.end(), [](const auto& action) {
         return std::find(mouse::actions.begin(), mouse::actions.end(), action) == mouse::actions.end();
@@ -79,7 +109,7 @@ bool Validate(const Settings& s, std::string& error) {
     else if (s.versus_rounds != 1 && s.versus_rounds != 3) error = "Versus rounds must be 1 or 3.";
     else if (s.versus_time != 0 && s.versus_time != 120 && s.versus_time != 180) error = "Versus match time must be 120 seconds, 180 seconds, or unlimited.";
     else if (!std::isfinite(s.deadzone) || s.deadzone < 0 || s.deadzone > .5) error = "Stick dead zone must be from 0 to 50 percent.";
-    else if (std::any_of(s.bindings.begin(), s.bindings.end(), [](const auto& binding) { return binding.empty() || binding.size() > 48; })) error = "Each controller button must have a valid SDL button name.";
+    else if (std::any_of(s.bindings.begin(), s.bindings.end(), [](const auto& binding) { return !bindings::ValidSource(binding); })) error = "Each controller button must have a valid SDL button name.";
     else { error.clear(); return true; }
     return false;
 }

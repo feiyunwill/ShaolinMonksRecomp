@@ -7,10 +7,10 @@
 #include <iostream>
 namespace fs=std::filesystem;
 int main(int argc,char** argv){
-    const auto root=fs::temp_directory_path()/("shaolin-mod-game-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    const auto root=fs::temp_directory_path()/("openshao-mod-game-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     try{
         if(argc!=4)throw std::runtime_error("Expected archive, original game source, and finished pack paths");
-        using namespace shaolin;
+        using namespace openshao;
         const auto package=mods::InspectPackage(files::FromUtf8(argv[1]),root);
         mods::GameReader game(files::FromUtf8(argv[2]));
         mods::InstallPackage(root,*package,[&](const mods::Patch& p){return game.Original(p);});

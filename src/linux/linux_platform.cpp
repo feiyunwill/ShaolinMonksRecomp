@@ -81,7 +81,7 @@ bool ChooseWithSdl(fs::path& selected, bool folder, const std::string& title) {
     selected = FromUtf8(result.path);
     return true;
 }
-}  // namespace
+}
 
 void SetArguments(int argc, char** argv) {
     g_arguments.clear();
@@ -123,20 +123,19 @@ void OpenFolder(const fs::path& folder) {
 }
 
 bool ChooseFile(fs::path& selected, bool folder, const std::string& title) {
-    // The portal-backed SDL dialog matches the desktop; the helpers cover sessions without a portal.
     const char* session = std::getenv("XDG_CURRENT_DESKTOP");
     const bool kde = session && std::strstr(session, "KDE");
     std::string line;
     if (kde && OnPath("kdialog")) {
-        const std::string command = folder ? "kdialog --title 'Shaolin Monks Recomp' --getexistingdirectory \"$HOME\" 2>/dev/null"
-                                           : "kdialog --title 'Shaolin Monks Recomp' --getopenfilename \"$HOME\" "
+        const std::string command = folder ? "kdialog --title 'OpenShao' --getexistingdirectory \"$HOME\" 2>/dev/null"
+                                           : "kdialog --title 'OpenShao' --getopenfilename \"$HOME\" "
                                              "'*.iso *.xiso *.zip default.xbe *.tar.xz|Xbox game files and mods' 2>/dev/null";
         if (Capture(command, line)) { selected = FromUtf8(line); return true; }
         return false;
     }
     if (OnPath("zenity")) {
-        const std::string command = folder ? "zenity --file-selection --directory --title='Shaolin Monks Recomp - Select your game folder' 2>/dev/null"
-                                           : "zenity --file-selection --title='Shaolin Monks Recomp - Select your game' "
+        const std::string command = folder ? "zenity --file-selection --directory --title='OpenShao - Select your game folder' 2>/dev/null"
+                                           : "zenity --file-selection --title='OpenShao - Select your game' "
                                              "--file-filter='Xbox game files | *.iso *.ISO *.xiso *.zip *.ZIP default.xbe' "
                                              "--file-filter='Mod archives | *.tar.xz' "
                                              "--file-filter='All files | *' 2>/dev/null";
@@ -146,4 +145,4 @@ bool ChooseFile(fs::path& selected, bool folder, const std::string& title) {
     return ChooseWithSdl(selected, folder, title);
 }
 
-}  // namespace linux_platform
+}

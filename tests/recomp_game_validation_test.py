@@ -16,7 +16,7 @@ def main():
     args = parser.parse_args()
     exe = args.exe.resolve()
     files = game_files(args.xbe.read_bytes())
-    with tempfile.TemporaryDirectory(prefix='shaolin-game-validation-') as temporary:
+    with tempfile.TemporaryDirectory(prefix='openshao-game-validation-') as temporary:
         root = Path(temporary)
         data = root / 'data'
         game = root / 'complete game'

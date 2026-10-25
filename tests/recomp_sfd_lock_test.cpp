@@ -25,7 +25,7 @@ static bool SamplesEqual(const std::vector<uint8_t>& a, const std::vector<uint8_
 }
 
 int main() {
-    using shaolin::sfd::NeedsWriteInvalidation;
+    using openshao::sfd::NeedsWriteInvalidation;
     int failures=0;
     auto check=[&](bool good, const char* message) {
         if (!good) { std::fprintf(stderr,"FAIL: %s\n",message); ++failures; }
@@ -66,12 +66,12 @@ int main() {
     if (NeedsWriteInvalidation(0x1000,0,0,0,0)) ++epoch;
     check(epoch != before && SamplesEqual(a,b),
           "writable movie lock advances dirty epoch even when sampled pixels match");
-    shaolin::sfd::SetSoftDisplayFilter(0);
-    check(shaolin::sfd::PresentationTaps()==1,"normal gameplay uses unfiltered digital output");
-    shaolin::sfd::SetSoftDisplayFilter(1);
-    check(shaolin::sfd::PresentationTaps()==2,"original SFD soft display request enables movie-only smoothing");
-    shaolin::sfd::SetSoftDisplayFilter(0);
-    check(shaolin::sfd::PresentationTaps()==1,"finishing SFD restores unfiltered gameplay");
+    openshao::sfd::SetSoftDisplayFilter(0);
+    check(openshao::sfd::PresentationTaps()==1,"normal gameplay uses unfiltered digital output");
+    openshao::sfd::SetSoftDisplayFilter(1);
+    check(openshao::sfd::PresentationTaps()==2,"original SFD soft display request enables movie-only smoothing");
+    openshao::sfd::SetSoftDisplayFilter(0);
+    check(openshao::sfd::PresentationTaps()==1,"finishing SFD restores unfiltered gameplay");
     if (!failures) std::puts("PASS: SFD writable LockRect invalidates partial frames missed by sampled checksums");
     return failures ? 1 : 0;
 }

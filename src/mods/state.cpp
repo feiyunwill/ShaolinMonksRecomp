@@ -3,7 +3,7 @@
 #include "../file_ops.h"
 #include <toml++/toml.hpp>
 namespace fs=std::filesystem;
-namespace shaolin::mods {
+namespace openshao::mods {
 std::vector<Installed> ReadInstalled(const fs::path& root) {
     std::vector<Installed> installed;
     if(!fs::exists(root/"installed.toml")) return installed;

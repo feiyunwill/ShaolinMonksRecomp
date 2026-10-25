@@ -11,7 +11,7 @@
 #include <set>
 #include <algorithm>
 namespace fs=std::filesystem;
-namespace shaolin::mods {
+namespace openshao::mods {
 namespace {
 std::string ReadText(const fs::path& path) {
     std::ifstream f(path,std::ios::binary);if(!f)throw std::runtime_error("Cannot read mod metadata");return {std::istreambuf_iterator<char>(f),{}};
@@ -25,8 +25,7 @@ std::string State(const std::vector<Installed>& installed) {
 void Lock(const fs::path& root,storage::DirectoryLock& lock) {
     fs::create_directories(root);std::string error;if(!lock.Acquire(root,error))throw std::runtime_error("Mods are in use. Close other launchers or games. "+error);
 }
-// Roll back any transaction whose registry commit did not complete. Only paths
-// recorded under the owned mods root are eligible for recovery.
+// Recover only journaled paths under the owned mods root when registry commit is incomplete.
 void RecoverLocked(const fs::path& root) {
     const auto journal=root/"transaction.toml";if(!fs::exists(journal))return;
     const auto j=toml::parse_file(files::Utf8(journal));
@@ -58,8 +57,7 @@ void Switch(const fs::path& root,const fs::path& staging,const Manifest& mod,con
     std::ostringstream out;
     const toml::table journal{{"destination",mod.install_dir},{"backup",files::Utf8(backup.filename())},
                              {"existed",fs::exists(destination)},{"previous",previous},{"next",next}};
-    // The journal embeds a registry which itself embeds JSON. Basic escaped
-    // strings avoid nested multiline delimiters at both serialization layers.
+    // Escape nested JSON strings so journal and registry delimiters cannot collide.
     out<<toml::toml_formatter{journal,toml::format_flags::none};
     files::AtomicWrite(root/"transaction.toml",out.str());
     try {
@@ -78,10 +76,10 @@ std::shared_ptr<Package> InspectPackage(const fs::path& archive,const fs::path& 
     ExtractTarXz(archive,p->folder,ProgressSlice(progress,0,8000));
     Report(progress,"Reading mod information",8000,ProgressTotal);
     const bool current=fs::exists(p->folder/"mod.json"),legacy=fs::exists(p->folder/"manifest.json");
-    if(current&&legacy)throw std::runtime_error("The package contains both mod.json and manifest.json. Rebuild it with the Krypt builder.");
+    if(current&&legacy)throw std::runtime_error("The package contains both mod.json and manifest.json. Rebuild it with the OpenShao-Mods builder.");
     const std::string metadata=current?"mod.json":"manifest.json";
     try {p->mod=ParseManifest(ReadText(p->folder/metadata));}
-    catch(const std::exception& e){throw std::runtime_error("Cannot read mod.json. Use a .tar.xz built by the Krypt release tool. "+std::string(e.what()));}
+    catch(const std::exception& e){throw std::runtime_error("Cannot read mod.json. Use a .tar.xz built by the OpenShao-Mods release tool. "+std::string(e.what()));}
     std::set<std::string> expected{metadata};
     const auto verification=ProgressSlice(progress,8000,9500);
     uint64_t checked=0;

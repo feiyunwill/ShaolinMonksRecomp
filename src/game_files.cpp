@@ -5,6 +5,7 @@
 #include "game_setup.h"
 #include "runtime_paths.h"
 #include "launcher.h"
+#include "restart.h"
 #include "language_pack.h"
 #include "mods/manager.h"
 #include "mods/languages.h"
@@ -17,46 +18,52 @@
 #include <map>
 
 namespace {
-std::unique_ptr<shaolin::storage::DirectoryLock> mod_lock;
+std::unique_ptr<openshao::storage::DirectoryLock> mod_lock;
 std::filesystem::path OriginalPath(const std::filesystem::path& root,std::string name) {
     std::replace(name.begin(),name.end(),'\\','/');
-    if(!shaolin::files::SafeRelative(name))return {};
+    if(!openshao::files::SafeRelative(name))return {};
     auto path=root;
-    for(const auto& part:shaolin::files::FromUtf8(name)) {
+    for(const auto& part:openshao::files::FromUtf8(name)) {
         auto next=path/part;
         if(!std::filesystem::exists(next)) {
-            auto key=shaolin::files::Utf8(part);
+            auto key=openshao::files::Utf8(part);
             const auto lower=[](std::string value){for(auto& c:value)if(c>='A'&&c<='Z')c+='a'-'A';return value;};
             key=lower(key);
             if(!std::filesystem::is_directory(path))return {};
             for(const auto& item:std::filesystem::directory_iterator(path))
-                if(lower(shaolin::files::Utf8(item.path().filename()))==key){next=item.path();break;}
+                if(lower(openshao::files::Utf8(item.path().filename()))==key){next=item.path();break;}
         }
         if(std::filesystem::is_symlink(next))return {};
         path=next;
     }
     return path;
 }
-bool MountLanguage(const shaolin::setup::Source& source,const app::GameFiles& game,std::string& error) {
-    using namespace shaolin;
+bool MountLanguage(const openshao::setup::Source& source,const app::GameFiles& game,std::string& error) {
+    using namespace openshao;
     language::Disable();mods::StageRoutines({});
     try {
-        const auto selected=options.validate_language_pack?std::string("pt-BR"):launcher::Current().language;
-        std::vector<std::filesystem::path> packs;
+        const auto selected=options.restart_preflight?options.restart_language:options.validate_language_pack?std::string("pt-BR"):launcher::Current().language;
+        auto settings=launcher::Current();settings.language=selected;
+        if(options.restart_preflight)settings.voice_language=options.restart_voice_language;
+        if(options.validate_language_pack)settings.voice_language=selected;
+        const auto voices=settings.voice_language;
+        std::vector<language::PackSelection> packs;
         std::vector<mods::RoutineScript> scripts;
         bool credits=false;
-        if(!options.language_pack.empty())packs.push_back(options.language_pack);
+        if(!options.language_pack.empty()){packs.push_back({options.language_pack,selected=="pt-BR",voices=="pt-BR"});credits=selected=="pt-BR";}
         else {
-            mods::Recover(paths::Mods());
-            mod_lock=std::make_unique<storage::DirectoryLock>();
-            if(!mod_lock->Acquire(paths::Mods(),error))return false;
+            if(!options.restart_preflight) {
+                mods::Recover(paths::Mods());
+                mod_lock=std::make_unique<storage::DirectoryLock>();
+                if(!mod_lock->Acquire(paths::Mods(),error))return false;
+            }
             const auto active=mods::ActiveMods(paths::Mods(),selected);
             bool language_ready=mods::IsOriginalLanguage(selected);
             for(const auto& row:active) {
                 const auto pack=paths::Mods()/files::FromUtf8(row.mod.install_dir);
                 if(!files::Within(pack,paths::Mods())||!std::filesystem::is_directory(pack))
                     throw std::runtime_error("Installed mod folder is missing: "+row.mod.name);
-                packs.push_back(pack);
+                packs.push_back({pack,true,row.mod.type!="language" || mods::SameLanguage(selected,voices)});
                 if(row.mod.type=="language") {language_ready=true;credits=selected=="pt-BR";}
                 for(const auto& path:row.mod.routines) {
                     const auto script=pack/files::FromUtf8(path);
@@ -67,6 +74,16 @@ bool MountLanguage(const shaolin::setup::Source& source,const app::GameFiles& ga
                 }
             }
             if(!language_ready)throw std::runtime_error("Install and enable a pack for the selected language in Mods, or select another language.");
+            if(!mods::SameLanguage(selected,voices) && !mods::IsOriginalLanguage(voices)) {
+                bool voice_ready=false;
+                for(const auto& row:mods::ActiveMods(paths::Mods(),voices))if(row.mod.type=="language") {
+                    const auto pack=paths::Mods()/files::FromUtf8(row.mod.install_dir);
+                    if(!files::Within(pack,paths::Mods()) || !std::filesystem::is_directory(pack))
+                        throw std::runtime_error("Installed voice language pack is missing");
+                    packs.push_back({pack,false,true});voice_ready=true;
+                }
+                if(!voice_ready)throw std::runtime_error("Install and enable a pack for the selected voice language in Mods.");
+            }
         }
         if(packs.empty())return true;
         const auto* disc=kernel::MountedDisc();
@@ -95,13 +112,12 @@ bool MountLanguage(const shaolin::setup::Source& source,const app::GameFiles& ga
             }
             return reader(at,bytes);
         };
-        const bool mounted=options.language_pack.empty()
-            ?language::MountPacks(packs,game.xbe,read,size,credits,error)
-            :language::Mount(packs.front(),game.xbe,read,size,error);
+        const bool mounted=language::MountPacks(packs,game.xbe,read,size,credits,error);
         if(!mounted)return false;
         if(options.validate_language_pack&&!language::ValidateMovies(error))return false;
         mods::StageRoutines(std::move(scripts));
         const auto& stats=language::Statistics();
+        LOGR("Language resources: text=%s voices=%s",selected.c_str(),voices.c_str());
         LOGR("Mods ready: packs=%zu resources=%u voices=%u occurrences=%u movies=%u",packs.size(),stats.archive.resources,
              stats.archive.voice_names,stats.archive.voice_occurrences,stats.movies);
         return true;
@@ -110,29 +126,29 @@ bool MountLanguage(const shaolin::setup::Source& source,const app::GameFiles& ga
 }
 
 bool app::FindGame(GameFiles& game) {
-    bool remember = shaolin::options.register_disc;
-    auto input = shaolin::options.disc.empty() ? shaolin::options.game : shaolin::options.disc;
-    if (input.empty() && !shaolin::options.background) {
-        if (!shaolin::options.setup) input = shaolin::setup::RememberedDisc();
-        if (shaolin::options.setup || input.empty() || !std::filesystem::exists(input)) {
-            if (!shaolin::setup::ChooseDisc(input)) return false;
+    bool remember = openshao::options.register_disc;
+    auto input = openshao::options.disc.empty() ? openshao::options.game : openshao::options.disc;
+    if (input.empty() && !openshao::options.background) {
+        if (!openshao::options.setup) input = openshao::setup::RememberedDisc();
+        if (openshao::options.setup || input.empty() || !std::filesystem::exists(input)) {
+            if (!openshao::setup::ChooseDisc(input)) return false;
             remember = true;
         }
     }
     const auto failure = [&](const std::string& message) {
         LOGE("Game setup: %s", message.c_str());
-        if (!shaolin::options.validate_disc && !shaolin::options.validate_language_pack)
-            shaolin::paths::ReportError(std::filesystem::path(std::u8string(message.begin(), message.end())).wstring());
+        if (!openshao::options.validate_disc && !openshao::options.validate_language_pack && !openshao::options.restart_preflight)
+            openshao::paths::ReportError(std::filesystem::path(std::u8string(message.begin(), message.end())).wstring());
         return false;
     };
     if (input.empty()) return failure("Select your Xbox game with --setup.");
-    shaolin::setup::Source source;
+    openshao::setup::Source source;
     std::vector<uint8_t> bytes;
     std::string error;
-    if (!shaolin::setup::PrepareGame(input, source, bytes, error,
-                                    !shaolin::options.background && !shaolin::options.validate_disc && !shaolin::options.validate_language_pack))
+    if (!openshao::setup::PrepareGame(input, source, bytes, error,
+                                    !openshao::options.background && !openshao::options.validate_disc && !openshao::options.validate_language_pack && !openshao::options.restart_preflight))
         return failure(error);
-    if (remember && shaolin::launcher::ShouldPersist() && !shaolin::setup::RememberDisc(source.path, error)) return failure(error);
+    if (remember && openshao::launcher::ShouldPersist() && !openshao::setup::RememberDisc(source.path, error)) return failure(error);
     if (source.folder) {
         kernel::MountDisc(nullptr);
         game = {source.path, std::move(bytes)};
@@ -140,9 +156,10 @@ bool app::FindGame(GameFiles& game) {
         auto disc = std::make_unique<kernel::Disc>();
         if (!disc->Open(source.path, error)) return failure(error);
         kernel::MountDisc(std::move(disc));
-        game = {shaolin::paths::Cache() / "dvd-scratch", std::move(bytes)};
+        game = {openshao::paths::Cache() / "dvd-scratch", std::move(bytes)};
     }
     if (!MountLanguage(source, game, error)) return failure(error);
+    if(!openshao::options.restart_preflight)openshao::restart::GameSource(source.path,!source.folder);
     LOGR("Verified Shaolin Monks game files");
     return true;
 }

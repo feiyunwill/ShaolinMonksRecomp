@@ -1,6 +1,5 @@
 """Exercise language-pack preparation with synthetic assets, never game files."""
 import importlib.util
-import json
 from pathlib import Path
 import struct
 import sys

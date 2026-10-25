@@ -13,7 +13,7 @@
 #include <unistd.h>
 #endif
 namespace fs = std::filesystem;
-namespace shaolin::files {
+namespace openshao::files {
 std::string Utf8(const fs::path& path) { const auto s = path.u8string(); return {s.begin(), s.end()}; }
 fs::path FromUtf8(std::string_view path) { return fs::path(std::u8string(path.begin(), path.end())); }
 fs::path UniqueSibling(const fs::path& path, std::string_view suffix) {

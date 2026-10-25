@@ -69,23 +69,23 @@ def windows_build(parser, args, root):
     commands = [([str(cmake), '-S', str(root), '-B', str(build), '-G', 'Ninja',
                  f'-DCMAKE_C_COMPILER={llvm / "bin/clang.exe"}', f'-DCMAKE_CXX_COMPILER={llvm / "bin/clang++.exe"}',
                  f'-DCMAKE_LINKER={llvm / "bin/lld-link.exe"}', f'-DCMAKE_MAKE_PROGRAM={cmake_root / "Ninja/ninja.exe"}',
-                 f'-DSHAOLIN_RECOMP_SDK={sdk}', f'-DSHAOLIN_GAME_XBE={xbe}',
+                 f'-DOPENSHAO_RECOMP_SDK={sdk}', f'-DOPENSHAO_GAME_XBE={xbe}',
                  '-DCMAKE_BUILD_TYPE=Release', '-DCMAKE_CXX_FLAGS_RELEASE=-O1', '-DCMAKE_C_FLAGS_RELEASE=-O1',
-                 '-DSHAOLIN_GENERATED_OPT=-O1'], 'configure.log')]
+                 '-DOPENSHAO_GENERATED_OPT=-O1', '-DOPENSHAO_SHADOW_DIAGNOSTICS=OFF'], 'configure.log')]
     if not args.configure_only:
         commands.append(([str(cmake), '--build', str(build), '--parallel', str(args.jobs)], 'build.log'))
     if args.test and not args.configure_only:
         commands.append(([str(cmake_root / 'CMake/bin/ctest.exe'), '--test-dir', str(build), '--output-on-failure'], 'ctest.log'))
     if not args.configure_only:
         commands.append(([sys.executable, str(root / 'tools/package_release.py'),
-                          '--exe', str(build / 'ShaolinMonksRecomp.exe')], 'package.log'))
+                          '--exe', str(build / 'OpenShao.exe')], 'package.log'))
     if args.disc:
-        commands[0][0].append(f'-DSHAOLIN_TEST_DISC={args.disc.resolve()}')
+        commands[0][0].append(f'-DOPENSHAO_TEST_DISC={args.disc.resolve()}')
     run_steps(commands, root, build.parent, env,
               creationflags=subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS)
     print('Completed requested build steps.', flush=True)
     if not args.configure_only:
-        print(f'Executable: {build / "ShaolinMonksRecomp.exe"}', flush=True)
+        print(f'Executable: {build / "OpenShao.exe"}', flush=True)
         print(f'Release ZIP and checksums: {root / "dist"}', flush=True)
 
 
@@ -154,28 +154,28 @@ def linux_build(parser, args, root):
         build = args.build_dir.resolve()
     elif str(root).startswith('/mnt/'):
         # a Windows drive under WSL is slow for the thousands of build files: they stay in the Linux home
-        build = Path.home() / '.cache/shaolin-monks-recomp/linux-release'
+        build = Path.home() / '.cache/openshao/linux-release'
     else:
         build = root / 'build/linux-release'
     build.mkdir(parents=True, exist_ok=True)
     commands = [(['cmake', '-S', str(root), '-B', str(build), '-G', 'Ninja',
                   f'-DCMAKE_C_COMPILER={clang}', f'-DCMAKE_CXX_COMPILER={clangxx}',
-                  f'-DSHAOLIN_RECOMP_SDK={sdk}', f'-DSHAOLIN_GAME_XBE={xbe}',
+                  f'-DOPENSHAO_RECOMP_SDK={sdk}', f'-DOPENSHAO_GAME_XBE={xbe}',
                   '-DCMAKE_BUILD_TYPE=Release', '-DCMAKE_CXX_FLAGS_RELEASE=-O1', '-DCMAKE_C_FLAGS_RELEASE=-O1',
-                  '-DSHAOLIN_GENERATED_OPT=-O1'], 'configure-linux.log')]
+                  '-DOPENSHAO_GENERATED_OPT=-O1'], 'configure-linux.log')]
     if not args.configure_only:
         commands.append((['cmake', '--build', str(build), '--parallel', str(args.jobs)], 'build-linux.log'))
     if args.test and not args.configure_only:
         commands.append((['ctest', '--test-dir', str(build), '--output-on-failure'], 'ctest-linux.log'))
     if not args.configure_only:
         commands.append(([sys.executable, str(root / 'tools/package_release.py'),
-                          '--exe', str(build / 'ShaolinMonksRecomp')], 'package-linux.log'))
+                          '--exe', str(build / 'OpenShao')], 'package-linux.log'))
     logs = root / 'build'
     logs.mkdir(parents=True, exist_ok=True)
     run_steps(commands, root, logs)
     print('Completed requested build steps.', flush=True)
     if not args.configure_only:
-        exe = build / 'ShaolinMonksRecomp'
+        exe = build / 'OpenShao'
         print(f'Executable: {exe}', flush=True)
         glibc = glibc_requirement(exe)
         if glibc:

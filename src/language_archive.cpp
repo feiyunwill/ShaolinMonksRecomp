@@ -9,7 +9,7 @@
 #define MINIZ_NO_ZLIB_COMPATIBLE_NAMES
 #include <miniz.h>
 
-namespace shaolin::language {
+namespace openshao::language {
 namespace {
 namespace fs = std::filesystem;
 using Bytes = std::vector<uint8_t>;
@@ -75,10 +75,11 @@ struct Context {
     }
 };
 
-void ReadPack(const fs::path& pack, std::vector<Record>& records,
+void ReadPack(const PackSelection& selection, std::vector<Record>& records,
               std::map<std::string, Voice>& voices, ArchiveStats& stats, uint64_t stride) {
+    const auto& pack=selection.directory;
     const auto resources = pack / "gamedata";
-    if (fs::exists(resources)) {
+    if (selection.text && fs::exists(resources)) {
         Require(fs::is_directory(resources) && !fs::is_symlink(fs::symlink_status(resources)),
                 "Language gamedata must be a regular directory");
         for (const auto& item : fs::directory_iterator(resources)) {
@@ -127,8 +128,7 @@ void ReadPack(const fs::path& pack, std::vector<Record>& records,
                         std::all_of(prefix.begin()+static_cast<ptrdiff_t>(trailer)+8, prefix.end(),
                                     [](uint8_t byte) { return byte == 0; }),
                         "Prepared EWDF trailer checksum, size, or padding is invalid");
-                // Raw PWF records are supported by both guest loading paths. Decoding here
-                // avoids carrying the original compressed allocation's in-place slack forward.
+                // Decode raw PWF records here to avoid retaining compressed-buffer slack.
                 auto data = std::make_shared<VirtualFile>();
                 data->AddBytes(0, std::move(decoded)); data->SetSize(decoded_size); data->Seal();
                 record.replacement = std::move(data);
@@ -144,7 +144,7 @@ void ReadPack(const fs::path& pack, std::vector<Record>& records,
         }
     }
     const auto audio = pack / "audio/voices";
-    if (fs::exists(audio)) {
+    if (selection.voices && fs::exists(audio)) {
         Require(fs::is_directory(audio) && !fs::is_symlink(fs::symlink_status(audio)),
                 "Language voices must be a regular directory");
         for (const auto& item : fs::directory_iterator(audio)) {
@@ -239,7 +239,7 @@ void Encode(Bytes& table, const Record& record) {
 }
 }
 
-bool PlanArchivesForPacks(std::span<const fs::path> packs,
+static bool PlanSelectedArchives(std::span<const PackSelection> packs,
     const SourceRead& read, const SourceSize& size, std::span<const uint32_t> selected_records,
     ArchiveView& files, ArchiveStats& stats, std::string& error) {
     stats = {}; files = {};
@@ -247,7 +247,7 @@ bool PlanArchivesForPacks(std::span<const fs::path> packs,
     Context context{read, size};
     try {
         Require(bool(read) && bool(size), "Original archive reader is unavailable");
-        for(const auto& pack:packs)Require(fs::is_directory(pack), "Mod resource directory is unavailable");
+        for(const auto& pack:packs)Require(fs::is_directory(pack.directory), "Mod resource directory is unavailable");
         for (size_t i = 0; i != kVolumes.size(); ++i) context.source_sizes[i] = size(kVolumes[i]);
         Require(context.source_sizes[0] >= 32, "Original PWF header is missing");
         Bytes header(32);
@@ -351,6 +351,15 @@ bool PlanArchivesForPacks(std::span<const fs::path> packs,
         return false;
     }
 }
+bool PlanArchivesForPacks(std::span<const fs::path> packs,const SourceRead& read,const SourceSize& size,
+    std::span<const uint32_t> selected,ArchiveView& files,ArchiveStats& stats,std::string& error) {
+    std::vector<PackSelection> layers;for(const auto& pack:packs)layers.push_back({pack});
+    return PlanSelectedArchives(layers,read,size,selected,files,stats,error);
+}
+bool PlanArchivesForPacks(std::span<const PackSelection> packs,const SourceRead& read,const SourceSize& size,
+    ArchiveView& files,ArchiveStats& stats,std::string& error) {
+    return PlanSelectedArchives(packs,read,size,kEnglishAndSharedRecords,files,stats,error);
+}
 bool PlanArchivesForRecords(const fs::path& pack,const SourceRead& read,const SourceSize& size,
     std::span<const uint32_t> selected,ArchiveView& files,ArchiveStats& stats,std::string& error) {
     const std::array<fs::path,1> packs{pack};
@@ -398,9 +407,5 @@ bool BuildArchivesForRecords(const fs::path& pack, const fs::path& output,
         for (const auto& path : created) { std::error_code ignored; fs::remove(path, ignored); }
         return false;
     }
-}
-bool BuildArchives(const fs::path& pack, const fs::path& output,
-    const SourceRead& read, const SourceSize& size, ArchiveStats& stats, std::string& error) {
-    return BuildArchivesForRecords(pack, output, read, size, kEnglishAndSharedRecords, stats, error);
 }
 }

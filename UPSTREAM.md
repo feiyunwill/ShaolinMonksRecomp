@@ -1,5 +1,8 @@
 # Tools and dependencies
 
+This document records dependency versions, licenses and implementation references.
+For installation and launcher settings, use the [player guide](README.md).
+
 ## XboxXBERecomp
 
 The port uses [XboxXBERecomp](https://github.com/TGP482/XboxXBERecomp), copyright 2026 TGP482, under the MIT license.
@@ -11,11 +14,16 @@ The adaptations cover graphics, audio, movies, input, storage, mods, diagnostics
 The controller report mapping derives from this SDK.
 
 The executable includes SDL, Dear ImGui, toml++, miniz, XZ Embedded and Lua.
-The launchers use Win32 dialogs or Dear ImGui with Vulkan.
+The launcher uses Dear ImGui, rendered with Direct3D 12 on Windows and Vulkan on Linux.
 SDL supplies controller input and platform services.
-File selection can use SDL dialogs, `zenity` or `kdialog`.
-The ImGui launcher uses an installed system font when available.
-Supported fonts include Noto Sans, DejaVu Sans, Ubuntu and Liberation Sans.
+File selection uses the Windows file dialog, SDL dialogs, `zenity` or `kdialog`.
+Release updates use the GitHub releases API and the SHA-256 digests published with each release.
+
+## Hanken Grotesk
+
+The launcher embeds the [Hanken Grotesk](https://github.com/marcologous/hanken-grotesk) typeface under the SIL Open Font License 1.1.
+The build uses static Regular, Medium and SemiBold instances of the variable font from the [Google Fonts repository](https://github.com/google/fonts/tree/main/ofl/hankengrotesk).
+See the [font license](licenses/HankenGrotesk-OFL.txt).
 
 Dependency notices cover the embedded ImGui font, stb code, SDL's HIDAPI and YUV conversion code.
 The recompiler tools use Zydis and Zycore.
@@ -67,7 +75,7 @@ See the [XZ Embedded license](licenses/xz-embedded-0BSD.txt).
 The USTAR reader, JSON reader, SHA-256 implementation and VCDIFF decoder use project code in `src/mods/`.
 The VCDIFF decoder follows [RFC 3284](https://www.rfc-editor.org/rfc/rfc3284).
 It also supports xdelta3 application headers and Adler-32 checks for each window.
-The Krypt release builder uses xdelta3 with `-S none`.
+The OpenShao-Mods release builder uses xdelta3 with `-S none`.
 The game applies patches without an xdelta3 executable.
 
 ## Routine scripts

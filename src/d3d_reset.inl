@@ -1,6 +1,5 @@
-// Included in the adapted XDK renderer TU to keep its resource ownership and lock.
-// Same-layout Reset retains implicit allocations, discards their contents and
-// restores the full viewport. Resize/format/mode changes require another path.
+// Same-layout Reset keeps allocation ownership but discards contents and restores the viewport.
+// Layout changes require resource recreation.
 HLE_STDCALL(D3DDevice_Reset, 1) {
     constexpr uint32_t invalid = 0x8876086C;
     std::lock_guard<std::recursive_mutex> lock(g_lock);
@@ -13,8 +12,8 @@ HLE_STDCALL(D3DDevice_Reset, 1) {
     if (!requested[1]) requested[1] = 480;
     requested[3] = std::max(requested[3], 1u);
     for (size_t i = 0; i < requested.size(); ++i) {
-        if (requested[i] != g_shaolin_present[i]) {
-            LOGE("d3d: Reset layout change is unsupported (field %zu: %X -> %X)", i, g_shaolin_present[i], requested[i]);
+        if (requested[i] != g_openshao_present[i]) {
+            LOGE("d3d: Reset layout change is unsupported (field %zu: %X -> %X)", i, g_openshao_present[i], requested[i]);
             return invalid;
         }
     }
@@ -22,8 +21,7 @@ HLE_STDCALL(D3DDevice_Reset, 1) {
         LOGE("d3d: Reset with explicit render targets is unsupported");
         return invalid;
     }
-    // Finish commands using the existing allocation before discarding contents.
-    // Guest CRT/XMemFree never owns the headers created by NewSurface.
+    // Wait for queued commands before discarding contents; guest XMemFree does not own surface headers.
     g_backend->Flush();
     for (uint32_t i = 0; i < g_buffer_count; ++i) {
         gpu::State clear = g_state;

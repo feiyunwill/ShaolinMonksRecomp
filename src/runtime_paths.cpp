@@ -18,21 +18,51 @@
 #include "runtime_paths.h"
 #include "core/log.h"
 #include "host.h"
+#include "legacy_folders.h"
 #include "path_preferences.h"
 #include "save_storage.h"
 
 namespace fs = std::filesystem;
-namespace shaolin::paths {
+namespace openshao::paths {
 namespace {
 fs::path root, executable_directory;
 fs::path save_root, locator;
 std::string move_warning;
 bool data_overridden = false;
 std::unique_ptr<storage::DirectoryLock> data_lock;
+bool data_in_use = false;
 bool isolated_run = false;
 std::string Utf8(const fs::path& value) {
     const auto bytes = value.u8string();
     return {bytes.begin(), bytes.end()};
+}
+constexpr const char* kDataFolder = "OpenShao";
+// Moves the default data and saves folders of an earlier release, found by their contents, to the current names.
+// Read-only queries and explicit data folders keep using the earlier folders without moving them.
+std::string AdoptPreviousName(const fs::path& parent, bool keep) {
+    std::vector<LegacyFolder> folders{{FindPreviousFolder(parent, root, IsDataFolder), root}};
+#ifdef _WIN32
+    folders.push_back({FindPreviousFolder(save_root.parent_path(), save_root, IsSavesFolder), save_root});
+#endif
+    std::string warning;
+    const auto adopted = AdoptLegacyFolders(folders, !keep, warning);
+    root = adopted[0];
+#ifdef _WIN32
+    save_root = adopted[1];
+#else
+    // The Linux saves folder lives inside the data folder.
+    if (root != folders[0].current) save_root = root / "saves";
+#endif
+    if (keep) return warning;
+    std::vector<LegacyFolder> moved;
+    for (size_t i = 0; i < folders.size(); ++i)
+        if (!folders[i].previous.empty() && adopted[i] == folders[i].current) moved.push_back(folders[i]);
+    if (moved.empty()) return warning;
+    for (const auto& file : {root / "paths.toml", root / "game-source.toml"}) {
+        std::string error;
+        if (!RewriteLegacyPaths(file, moved, error)) { if (!warning.empty()) warning += "\n"; warning += error; }
+    }
+    return warning;
 }
 }
 bool Initialize(const fs::path& executable, bool isolated, const fs::path& requested, std::string& error, bool read_only) {
@@ -42,22 +72,27 @@ bool Initialize(const fs::path& executable, bool isolated, const fs::path& reque
         data_overridden = isolated || !requested.empty();
         move_warning.clear();
         data_lock.reset();
-        if (isolated) root = requested.empty() ? executable_directory / "runtime-data" : fs::absolute(requested);
+        data_in_use = false;
+        std::string save_error, legacy_warning;
+        if (isolated) {
+            root = requested.empty() ? executable_directory / "runtime-data" : fs::absolute(requested);
+            save_root = root / "saves";
+        } else {
 #ifndef _WIN32
-        else root = linux_platform::DataHome() / "Shaolin Monks Recomp";
+            const auto parent = linux_platform::DataHome();
 #else
-        else {
             PWSTR value = nullptr;
             const HRESULT status = SHGetKnownFolderPath(FOLDERID_LocalAppData, read_only ? KF_FLAG_DEFAULT : KF_FLAG_CREATE, nullptr, &value);
             if (FAILED(status)) throw std::runtime_error("Windows LocalAppData is unavailable");
-            root = fs::path(value) / L"Shaolin Monks Recomp";
+            const fs::path parent(value);
             CoTaskMemFree(value);
-        }
 #endif
+            root = parent / kDataFolder;
+            save_root = storage::SavedGamesRoot(save_error, false);
+            if (save_root.empty()) throw std::runtime_error(save_error);
+            legacy_warning = AdoptPreviousName(parent, read_only || !requested.empty());
+        }
         const auto default_data = root;
-        std::string save_error;
-        save_root = isolated ? root / "saves" : storage::SavedGamesRoot(save_error, false);
-        if (save_root.empty()) throw std::runtime_error(save_error);
         locator = default_data / "paths.toml";
         if (!isolated) {
             Locations selected;
@@ -65,19 +100,13 @@ bool Initialize(const fs::path& executable, bool isolated, const fs::path& reque
                 throw std::runtime_error(move_warning);
             root = selected.data; save_root = selected.saves;
         }
+        if (!legacy_warning.empty()) move_warning = move_warning.empty() ? legacy_warning : move_warning + "\n" + legacy_warning;
         if (!requested.empty()) root = fs::absolute(requested);
         if (read_only) return true;
         for (const auto& directory : {root, Logs(), Cache(), Crashes()}) fs::create_directories(directory);
         if (!isolated) {
             data_lock = std::make_unique<storage::DirectoryLock>();
-            if (!data_lock->Acquire(root, error)) { data_lock.reset(); return false; }
-        }
-        if (!fs::exists(Config())) {
-            const auto legacy = executable_directory / "shaolin-recomp.toml";
-            if (fs::is_regular_file(legacy)) {
-                // Never replace destination settings or remove the original configuration.
-                fs::copy_file(legacy, Config(), fs::copy_options::none);
-            }
+            if (!data_lock->Acquire(root, error, &data_in_use)) { data_lock.reset(); return false; }
         }
         return true;
     } catch (const std::exception& exception) {
@@ -96,6 +125,8 @@ fs::path Mods() { return root / "mods"; }
 const fs::path& SaveRoot() { return save_root; }
 const std::string& MoveWarning() { return move_warning; }
 bool DataFolderOverridden() { return data_overridden; }
+void ReleaseDataLock() { data_lock.reset(); }
+bool DataInUse() { return data_in_use; }
 bool ChangeFolders(const fs::path& data, const fs::path& saves, std::string& error) {
     if (data_overridden) { error = "Folder preferences are overridden by this launch's command-line options"; return false; }
     return ScheduleLocations(locator, {root, save_root}, {data, saves}, error);
@@ -125,7 +156,7 @@ void ReportError(const std::wstring& reason, const fs::path& dump) {
 #ifndef _WIN32
     const auto text = Utf8(fs::path(message));
     std::fprintf(stderr, "%s\n", text.c_str());
-    linux_platform::ShowError("Shaolin Monks Recomp", text);
+    linux_platform::ShowError("OpenShao", text);
     logx::Flush();
     LOGR("Error dialog closed. Application data folder: %s", Utf8(Root()).c_str());
     linux_platform::OpenFolder(Root());
@@ -141,7 +172,7 @@ void ReportError(const std::wstring& reason, const fs::path& dump) {
     DWORD foreground_process = 0;
     GetWindowThreadProcessId(GetForegroundWindow(), &foreground_process);
     if (interactive && foreground_process == GetCurrentProcessId()) ClipCursor(nullptr);
-    MessageBoxW(nullptr, message.c_str(), L"Shaolin Monks Recomp", MB_OK | MB_ICONERROR);
+    MessageBoxW(nullptr, message.c_str(), L"OpenShao", MB_OK | MB_ICONERROR);
     logx::Flush();
     LOGR("Error dialog closed. Application data folder: %s", Utf8(Root()).c_str());
     if (interactive) {

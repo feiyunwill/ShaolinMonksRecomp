@@ -5,7 +5,7 @@
 #include <algorithm>
 #include <cstring>
 namespace fs=std::filesystem;
-namespace shaolin::mods {
+namespace openshao::mods {
 namespace {
 std::string Lower(std::string value) {for(auto& c:value)if(c>='A'&&c<='Z')c+=32;return value;}
 uint32_t Le(const uint8_t* p) {return uint32_t(p[0])|(uint32_t(p[1])<<8)|(uint32_t(p[2])<<16)|(uint32_t(p[3])<<24);}

@@ -2,7 +2,7 @@
 #include <cstdint>
 #include "mouse_state.h"
 
-namespace shaolin::mouse {
+namespace openshao::mouse {
 void Configure(const Settings& settings);
 void Window(void* window);
 bool Message(void*, uint32_t, uintptr_t, intptr_t, intptr_t*);

@@ -19,45 +19,45 @@ bool LoadGlobal() {
     }
     vk.vkGetInstanceProcAddr = reinterpret_cast<PFN_vkGetInstanceProcAddr>(SDL_Vulkan_GetVkGetInstanceProcAddr());
     if (!vk.vkGetInstanceProcAddr) return false;
-#define SHAOLIN_VK_LOAD(name) vk.name = reinterpret_cast<PFN_##name>(vk.vkGetInstanceProcAddr(nullptr, #name));
-    SHAOLIN_VK_GLOBAL(SHAOLIN_VK_LOAD)
-#undef SHAOLIN_VK_LOAD
+#define OPENSHAO_VK_LOAD(name) vk.name = reinterpret_cast<PFN_##name>(vk.vkGetInstanceProcAddr(nullptr, #name));
+    OPENSHAO_VK_GLOBAL(OPENSHAO_VK_LOAD)
+#undef OPENSHAO_VK_LOAD
     return vk.vkCreateInstance && vk.vkEnumerateInstanceExtensionProperties;
 }
 
 bool LoadInstance(VkInstance instance) {
     bool ok = true;
-#define SHAOLIN_VK_LOAD(name)                                                                \
+#define OPENSHAO_VK_LOAD(name)                                                                \
     vk.name = reinterpret_cast<PFN_##name>(vk.vkGetInstanceProcAddr(instance, #name));       \
     if (!vk.name) {                                                                          \
         LOGE("vulkan: missing %s", #name);                                                   \
         ok = false;                                                                          \
     }
-    SHAOLIN_VK_INSTANCE(SHAOLIN_VK_LOAD)
-#undef SHAOLIN_VK_LOAD
+    OPENSHAO_VK_INSTANCE(OPENSHAO_VK_LOAD)
+#undef OPENSHAO_VK_LOAD
     return ok;
 }
 
 bool LoadDevice(VkDevice dev) {
     device = dev;
     bool ok = true;
-#define SHAOLIN_VK_LOAD(name)                                                       \
+#define OPENSHAO_VK_LOAD(name)                                                       \
     vk.name = reinterpret_cast<PFN_##name>(vk.vkGetDeviceProcAddr(dev, #name));     \
     if (!vk.name) {                                                                 \
         LOGE("vulkan: missing %s", #name);                                          \
         ok = false;                                                                 \
     }
-    SHAOLIN_VK_DEVICE(SHAOLIN_VK_LOAD)
-#undef SHAOLIN_VK_LOAD
-#define SHAOLIN_VK_LOAD2(name, alt)                                                  \
+    OPENSHAO_VK_DEVICE(OPENSHAO_VK_LOAD)
+#undef OPENSHAO_VK_LOAD
+#define OPENSHAO_VK_LOAD2(name, alt)                                                  \
     vk.name = reinterpret_cast<PFN_##name>(vk.vkGetDeviceProcAddr(dev, #name));      \
     if (!vk.name) vk.name = reinterpret_cast<PFN_##name>(vk.vkGetDeviceProcAddr(dev, alt)); \
     if (!vk.name) {                                                                  \
         LOGE("vulkan: missing %s", #name);                                           \
         ok = false;                                                                  \
     }
-    SHAOLIN_VK_PROMOTED(SHAOLIN_VK_LOAD2)
-#undef SHAOLIN_VK_LOAD2
+    OPENSHAO_VK_PROMOTED(OPENSHAO_VK_LOAD2)
+#undef OPENSHAO_VK_LOAD2
     return ok;
 }
 
@@ -83,4 +83,4 @@ const char* ResultName(VkResult r) {
     }
 }
 
-}  // namespace vkapi
+}

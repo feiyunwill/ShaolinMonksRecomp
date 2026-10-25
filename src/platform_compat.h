@@ -1,6 +1,4 @@
 #pragma once
-// Small Windows API surface used by shared code, with portable equivalents
-// elsewhere. Windows builds include the real headers unchanged.
 #ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX

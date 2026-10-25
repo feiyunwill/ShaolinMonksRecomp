@@ -1,28 +1,15 @@
 # Language packs
 
-See [Mods](MODS.md) for other languages and package formats.
-The preparation tools below produce LanguagePack PT-BR.
-
-## Install LanguagePack PT-BR
-
-1. Select **Brazilian Portuguese** as the game language.
-2. Accept the prompt to install or enable **LanguagePack PT-BR**.
-3. Wait until **Mods** shows the pack as enabled.
-
-The language stays selected. You can select **Play** from **Mods**.
-
-For a local `.tar.xz` package, use **Mods > Install from file...**.
-The pack requires the original USA/Europe Xbox game.
-Manage updates in **Mods**. Failed installations preserve the previous pack.
-Play also offers installation if the selected language needs an inactive or missing pack.
+This guide is for authors of LanguagePack PT-BR. Players install it in the launcher's **Mods** page.
+See [Mods](MODS.md) for other languages and the general package format.
 
 Installed files are in `mods/languages/LanguagePack_PT-BR/` under the data folder.
-Use **Files and support** to find that folder.
 
 ## Package format
 
 The builder creates a `.tar.xz` containing mod files, xdelta patches and `mod.json`.
-Installation checks the original game, package files and patch results with SHA-256 before replacing an installed pack.
+Installation checks the original game, package files and patch results with SHA-256.
+Only a successful check permits replacement of the installed pack.
 Original game files remain unchanged.
 Do not manually edit `mods/installed.toml`, which records installed versions and enabled states.
 
@@ -61,6 +48,9 @@ It applies fonts and resource tables in memory without rewriting game archives o
 The first read of each translated movie builds an index and can delay playback.
 
 The pack uses the original English language slot.
+Text resources and fonts follow Text Language. Dialogue recordings and movie audio follow Voice Language.
+Choosing Portuguese voices with another text language loads only the audio from the pack.
+Choosing Portuguese text with original voices loads the translated resources and fonts without Portuguese audio.
 Campaign ending credits finish naturally and cannot be skipped.
 Extras credits still allow manual exit.
 
@@ -76,7 +66,8 @@ Use these tools:
 Define `MZ_DEFAULT_MEMLEVEL=9` when compiling the encoder with this project's pinned miniz.
 This miniz revision does not declare that macro.
 
-The preparer checks both XBE hashes and verifies each encoded EWDF against its source.
+The preparer checks both XBE hashes.
+It compares each encoded EWDF with its source.
 It extracts fonts without including either XBE in the pack.
 It preserves movie sample counts, audio headers and payload sizes.
 See [Building](BUILDING.md) for the supported original hash.
@@ -92,26 +83,26 @@ It writes the pack only after all checks pass.
 
 ## Build the release package
 
-1. Copy the finished files into `mods/LanguagePack_PT-BR/pack/` in the Krypt repository.
+1. Copy the finished files into `mods/LanguagePack_PT-BR/pack/` in the OpenShao-Mods repository.
 2. Run its `build.bat`.
 3. Enter the requested game folder and mod version.
 4. Test the generated `.tar.xz` through **Mods > Install from file...**.
 
 The release builder converts replacement files into xdelta patches.
 It adds `mod.json` and writes the package to `dist/`.
-See the [Krypt instructions](https://github.com/OAleex/ShaolinMonksRecompKrypt) for catalog and publication details.
+See the [OpenShao-Mods instructions](https://github.com/OAleex/OpenShao-Mods) for catalog and publication details.
 
 ## Checks
 
 The `--language-pack` option selects finished files directly for authoring checks.
-It does not register an installation in the Mods tab.
+It does not register an installation in the Mods page.
 
 ```powershell
 python tests/language_pack_test.py
-ShaolinMonksRecomp.exe --validate-language-pack --game "C:/Games/ShaolinMonks" --language-pack ".private/LanguagePack_PT-BR" --data-dir "work/language-validation/data"
+OpenShao.exe --validate-language-pack --game "C:/Games/ShaolinMonks" --language-pack ".private/LanguagePack_PT-BR" --data-dir "work/language-validation/data"
 ```
 
-Use `./ShaolinMonksRecomp` when the executable has no `.exe` extension.
+Use `./OpenShao` when the executable has no `.exe` extension.
 The diagnostic checks all four movie indexes before it exits.
 It does not start gameplay, audio or controller input.
 

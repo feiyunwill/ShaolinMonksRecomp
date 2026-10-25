@@ -9,11 +9,11 @@
 #include <vector>
 #include "save_storage.h"
 namespace fs = std::filesystem;
-namespace storage = shaolin::storage;
+namespace storage = openshao::storage;
 static std::string Read(const fs::path& p) { std::ifstream f(p, std::ios::binary); return {std::istreambuf_iterator<char>(f), {}}; }
 static void Write(const fs::path& p, const std::string& b) { fs::create_directories(p.parent_path()); std::ofstream(p, std::ios::binary) << b; }
 int main() {
-    const auto root = fs::temp_directory_path() / (L"shaolin-migration-test-" + std::to_wstring(GetCurrentProcessId()));
+    const auto root = fs::temp_directory_path() / (L"openshao-migration-test-" + std::to_wstring(GetCurrentProcessId()));
     fs::create_directory(root);
     const auto legacy = root / L"old build/hdd", stable = root / L"Jogos Salvos/少林/hdd";
     const fs::path slot = "E/UDATA/4d570029/slot/save.dat";
@@ -37,7 +37,12 @@ int main() {
     for (const auto& e : fs::directory_iterator(root)) check(e.path().filename().string().find(".migrating-") == std::string::npos, "failed migration must clean its own staging directory");
     {
         storage::DirectoryLock first, second;
-        check(first.Acquire(stable, error) && !second.Acquire(stable, error), "two processes/instances must not share a save directory for writing");
+        bool in_use = false;
+        check(first.Acquire(stable, error) && !second.Acquire(stable, error, &in_use), "two processes/instances must not share a save directory for writing");
+        check(in_use, "a held lock must be reported as in use, not as an unusable folder");
+        storage::DirectoryLock missing;
+        in_use = true;
+        check(!missing.Acquire(stable / "missing/folder", error, &in_use) && !in_use, "a folder that cannot be opened must not be reported as in use");
     }
     { storage::DirectoryLock next; check(next.Acquire(stable, error), "save lock must release on shutdown"); }
     storage::SetDataRoot(stable);

@@ -1,60 +1,67 @@
-Shaolin Monks Recomp
-A PC port of Mortal Kombat: Shaolin Monks
+OpenShao
+A native PC port of Mortal Kombat: Shaolin Monks.
 
-Requirements
+The game is not included. You need your own USA/Europe Xbox copy.
 
-- An x64 CPU with SSE4.2 and POPCNT.
-- A Direct3D 12 or Vulkan 1.3 GPU.
-- Vulkan 1.2 requires dynamic rendering.
 
-Packages and updates
+REQUIREMENTS
 
-Windows releases use .zip. Linux releases use .tar.gz.
-Download new versions from:
-https://github.com/OAleex/ShaolinMonksRecomp/releases/latest
+- Windows 10 1903 or later, or Linux with glibc 2.38 or later
+- x64 CPU with SSE4.2 and POPCNT
+- Direct3D 12 GPU, or Vulkan 1.2 with dynamic rendering and timeline semaphores
 
-Extract each new version into a separate folder.
-Keep your configured data and saves folders.
 
-Getting started
+GETTING STARTED
 
-1. Extract the release package for your system.
-2. Start the executable in the extracted folder.
-3. Select your original USA/Europe Xbox game.
-4. Select Save and Play in the launcher.
+1. Open OpenShao.
+2. Choose your game: an ISO, XISO, ZIP, extracted folder or default.xbe.
+3. Select Play.
 
-Setup accepts ISO, XISO, ZIP, an extracted game folder, or default.xbe.
-Keep the selected image or complete game folder available.
+Keep the game image or folder where it is. OpenShao reads it in place.
 
-Mods
 
-Install and manage mods in the Mods tab.
-It checks for mod updates when the launcher opens.
-New mods and languages appear from the catalog.
-Updates require selecting Update in Mods.
-Mod packages use .tar.xz. Install a downloaded package through Install from file...
-Select a language to install or enable its required pack when needed.
-Accept the prompt to follow progress in Mods. The language stays selected.
-Translation and voice cast credits are in the pack's CREDITS.md.
-Mods that replace the same resources cannot be enabled together.
+UPDATES
 
-Controls
+The launcher checks for a new version when it opens. Select Update to install it.
+Saves, settings and mods are kept.
+To turn off the check, open Files and clear Updates.
 
-F9 shows or hides FPS and frame time.
-F10 releases or captures the mouse pointer.
-The Controls and Mouse tabs contain input settings.
+To update manually, download the package for your system and extract it to a new folder:
+Windows: OpenShao-<version>-Windows-x64.zip
+Linux:   OpenShao-<version>-Linux-x64.tar.gz
+https://github.com/OAleex/OpenShao/releases/latest
 
-Folders and support
 
-Open Files and support to view your data and saves folders.
-Close other copies of the game and launcher before changing a folder.
-Choose an empty destination. Save your settings. Restart the launcher to move the files.
-Include the session log and steps to reproduce a problem when reporting an error.
+SETTINGS AND CONTROLS
 
-Project repository, requirements and support:
-https://github.com/OAleex/ShaolinMonksRecomp
+Game settings are in Konfigure Recompilation, in the main menu and in the SELECT pause menu.
+The pause menu lists Continue, Options, Konfigure Recompilation, Exit Game and Exit to Desktop. Exit Game returns to the main menu.
+Mods and language packs are in the launcher's Mods page.
 
-Code license: GPL-2.0-or-later. See licenses/LICENSE.txt.
-Dependency licenses and notices: licenses/
-The game is not included.
-The project license does not grant rights to game assets.
+F9   show the version and frame rate
+F10  release or capture the mouse
+
+If the game does not start after a display change, open the launcher and select Files > Video > Restore.
+
+
+FOLDERS
+
+Open Files in the launcher to open or move your saves, data and logs.
+
+
+KNOWN ISSUES
+
+Most graphical issues have been fixed, but some can still appear.
+Any problem is worth reporting. Open an issue with a screenshot: https://github.com/OAleex/OpenShao/issues
+Mortal Kombat II and The Suffering demo do not run.
+
+
+HELP
+
+Project page: https://github.com/OAleex/OpenShao
+Report problems with the latest log from Files > Logs > Open.
+
+Development uses AI assistance. The maintainer reviews every change.
+
+Code license: GPL-2.0-or-later. See licenses/LICENSE.txt and the other notices in licenses/.
+The license does not cover the original game or its assets.

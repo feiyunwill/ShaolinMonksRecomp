@@ -1,4 +1,4 @@
 #pragma once
-namespace shaolin::mods {
-inline constexpr const char* RecompVersion = "0.2.0";
+namespace openshao::mods {
+inline constexpr const char* RecompVersion = "0.3.0";
 }

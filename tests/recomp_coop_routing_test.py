@@ -50,7 +50,7 @@ def main():
             if owner.value == process.pid:
                 name = ctypes.create_unicode_buffer(256)
                 user.GetClassNameW(hwnd, name, len(name))
-                if name.value == "ShaolinMonksRecomp":
+                if name.value == "OpenShao":
                     assert not user.IsWindowVisible(hwnd), "Diagnostic window became visible"
                     hw[0] = hwnd
             return True
@@ -109,8 +109,8 @@ def main():
     assert "separate" in stages, "Guest character selector did not trigger Ko-op P1/P2 split"
     split = log.index("input: multiplayer=1 keyboard=1 reserved_port=0")
     after = log[split:]
-    assert "shaolin input: state port=1" in after, "Gamepad input did not reach player two"
-    assert "shaolin input: state port=0" in after, "Keyboard input did not reach player one"
+    assert "openshao input: state port=1" in after, "Gamepad input did not reach player two"
+    assert "openshao input: state port=0" in after, "Keyboard input did not reach player one"
     print("PASS: original character selector split keyboard P1 + gamepad P2")
 
 

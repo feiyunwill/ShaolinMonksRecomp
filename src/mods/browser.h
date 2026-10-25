@@ -3,7 +3,7 @@
 #include <atomic>
 #include <mutex>
 #include <thread>
-namespace shaolin::mods {
+namespace openshao::mods {
 struct BrowserState {
     std::vector<Mod> catalog;
     std::vector<Installed> installed;
@@ -11,9 +11,6 @@ struct BrowserState {
     uint64_t done=0,total=0,revision=0;
     bool busy=false,updates=false,checking=false;
 };
-struct LanguageChoice {std::string code,name;};
-std::vector<LanguageChoice> LanguageChoices(const BrowserState& state,std::string_view selected={});
-std::string LanguageProvider(const BrowserState& state,std::string_view code);
 class Browser {
     std::filesystem::path root_;
     mutable std::mutex mutex_;

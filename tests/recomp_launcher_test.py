@@ -1,385 +1,404 @@
-"""Exercise the native settings window on a private desktop."""
+"""Drive the launcher through its automation channel and check the files it changes.
+
+The executable runs with --launcher-test, which keeps the real launcher logic and drawing but opens no window.
+On Windows the processes run on a private desktop, so error dialogs never reach the user's desktop.
+Other systems run without display access or external desktop commands.
+"""
 import argparse
-import ctypes
-from ctypes import wintypes
 import hashlib
-import json
 import io
+import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 import tarfile
 import tempfile
 import time
 import tomllib
-from recomp_error_dialog_test import PrivateProcess
+
+WINDOWS = sys.platform == 'win32'
+if WINDOWS:
+    import ctypes
+    from ctypes import wintypes
+    from recomp_error_dialog_test import PrivateProcess
 from recomp_game_fixture import game_files, write_game_folder
+
+XBE_SHA256 = '48240902bf4a04eb89376217c529531032d3370749bcce91a194878cc49db74a'
+
+
+class Desktop:
+    """A private Windows desktop, or nothing on other systems."""
+
+    def __init__(self):
+        self.name = None
+        if not WINDOWS:
+            return
+        self.user = ctypes.WinDLL('user32', use_last_error=True)
+        self.kernel = ctypes.WinDLL('kernel32')
+        self.callback = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+        user = self.user
+        user.CreateDesktopW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR, ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p]
+        user.CreateDesktopW.restype = wintypes.HANDLE
+        user.CloseDesktop.argtypes = [wintypes.HANDLE]
+        user.GetThreadDesktop.argtypes = [wintypes.DWORD]
+        user.GetThreadDesktop.restype = wintypes.HANDLE
+        user.SetThreadDesktop.argtypes = [wintypes.HANDLE]
+        user.EnumDesktopWindows.argtypes = [wintypes.HANDLE, self.callback, wintypes.LPARAM]
+        user.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+        user.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+        user.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+        user.IsWindowVisible.argtypes = [wintypes.HWND]
+        user.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+        self.name = 'OpenShaoLauncher' + str(time.time_ns())
+        self.handle = user.CreateDesktopW(self.name, None, None, 0, 0x01ff, None)
+        assert self.handle
+        self.previous = user.GetThreadDesktop(self.kernel.GetCurrentThreadId())
+        assert user.SetThreadDesktop(self.handle)
+
+    def windows(self, process):
+        """Titles and texts of the visible windows a process opened on the private desktop."""
+        if not WINDOWS:
+            return []
+        self.user.EnumChildWindows.argtypes = [wintypes.HWND, self.callback, wintypes.LPARAM]
+        found = []
+
+        def text(window):
+            buffer = ctypes.create_unicode_buffer(1024)
+            self.user.GetWindowTextW(window, buffer, len(buffer))
+            return buffer.value
+
+        def observe(window, _):
+            pid = wintypes.DWORD()
+            self.user.GetWindowThreadProcessId(window, ctypes.byref(pid))
+            if pid.value == process.pid and self.user.IsWindowVisible(window):
+                kind = ctypes.create_unicode_buffer(64)
+                self.user.GetClassNameW(window, kind, len(kind))
+                parts = []
+                children = self.callback(lambda child, _: parts.append(text(child)) or True)
+                self.user.EnumChildWindows(window, children, 0)
+                found.append(f'{kind.value} "{text(window)}": ' + ' | '.join(p for p in parts if p))
+            return True
+
+        observer = self.callback(observe)
+        self.user.EnumDesktopWindows(self.handle, observer, 0)
+        return found
+
+    def close(self):
+        if WINDOWS:
+            self.user.SetThreadDesktop(self.previous)
+            self.user.CloseDesktop(self.handle)
+
+    def close_message(self, process, title, timeout=15):
+        """Closes a message box with the given title. Other systems report errors without a dialog."""
+        if not WINDOWS:
+            return
+        found = []
+
+        def observe(window, _):
+            pid = wintypes.DWORD()
+            self.user.GetWindowThreadProcessId(window, ctypes.byref(pid))
+            text = ctypes.create_unicode_buffer(256)
+            self.user.GetWindowTextW(window, text, len(text))
+            kind = ctypes.create_unicode_buffer(64)
+            self.user.GetClassNameW(window, kind, len(kind))
+            if pid.value == process.pid and text.value == title and kind.value == '#32770' and self.user.IsWindowVisible(window):
+                found.append(window)
+            return True
+
+        observer = self.callback(observe)
+        deadline = time.monotonic() + timeout
+        while process.poll() is None and not found and time.monotonic() < deadline:
+            self.user.EnumDesktopWindows(self.handle, observer, 0)
+            time.sleep(.05)
+        assert found, 'The expected message did not open: ' + title
+        time.sleep(.3)
+        self.user.PostMessageW(found[0], 0x0010, 0, 0)
+
+
+class Launcher:
+    # Every started launcher, so a failed check still ends them. A process left on the private desktop
+    # keeps the test's output handles open and CTest would wait for it indefinitely.
+    started = []
+
+    def __init__(self, exe, arguments, root, name, desktop):
+        Launcher.started.append(self)
+        self.closed = False
+        self.folder = root / (name + '-automation')
+        self.folder.mkdir()
+        (self.folder / 'commands.txt').write_text('')
+        self.output = root / (name + '.log')
+        self.log = self.output.open('wb')
+        command = [str(exe), '--launcher-test', str(self.folder), *map(str, arguments)]
+        if WINDOWS:
+            self.process = PrivateProcess(command, desktop.name, self.log, root)
+        else:
+            environment = os.environ.copy()
+            for key in ('DISPLAY', 'WAYLAND_DISPLAY', 'DBUS_SESSION_BUS_ADDRESS'):
+                environment.pop(key, None)
+            environment.update(SDL_VIDEODRIVER='dummy', SDL_AUDIODRIVER='dummy', PATH='')
+            self.process = subprocess.Popen(command, stdout=self.log, stderr=subprocess.STDOUT, cwd=root, env=environment)
+
+    def send(self, *commands):
+        with (self.folder / 'commands.txt').open('a', encoding='utf-8', newline='\n') as stream:
+            for command in commands:
+                stream.write(command + '\n')
+
+    def state(self):
+        try:
+            return json.loads((self.folder / 'state.json').read_text(encoding='utf-8'))
+        except (FileNotFoundError, PermissionError, json.JSONDecodeError):
+            return None
+
+    def wait(self, predicate, message, timeout=30):
+        deadline = time.monotonic() + timeout
+        state = None
+        while time.monotonic() < deadline:
+            state = self.state()
+            if state is not None and predicate(state):
+                return state
+            assert self.process.poll() is None, (message, 'the launcher exited', self.process.poll(), state)
+            time.sleep(.03)
+        raise AssertionError((message, state))
+
+    def exit_code(self, timeout=15):
+        try:
+            return self.process.wait(timeout=timeout)
+        finally:
+            self.close()
+
+    def close(self):
+        if self.closed:
+            return
+        self.closed = True
+        try:
+            if self.process.poll() is None:
+                self.process.terminate()
+                self.process.wait(timeout=5)
+        finally:
+            if WINDOWS:
+                self.process.close()
+            self.log.close()
+
+    def report(self, desktop):
+        """Prints the end of this launcher's output after a failed check."""
+        if self.process.poll() is None:
+            print('Launcher still running. Its windows: ' + repr(desktop.windows(self.process)), file=sys.stderr)
+        else:
+            print('Launcher exit code: ' + str(self.process.poll()), file=sys.stderr)
+        for dump in self.output.parent.glob('**/crashes/*'):
+            print('Crash report: ' + str(dump), file=sys.stderr)
+        try:
+            text = self.output.read_text(encoding='utf-8', errors='replace')
+        except OSError:
+            return
+        print('--- ' + self.output.name + ' ---', file=sys.stderr)
+        print(text[-4000:], file=sys.stderr)
+        for log in sorted(self.output.parent.glob('**/logs/*.log'))[-2:]:
+            print('--- ' + str(log) + ' ---', file=sys.stderr)
+            print(log.read_text(encoding='utf-8', errors='replace')[-4000:], file=sys.stderr)
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--exe', required=True, type=Path)
-    parser.add_argument('--game', required=True, type=Path)
+    parser.add_argument('--game', type=Path)
     args = parser.parse_args()
-    user = ctypes.WinDLL('user32', use_last_error=True)
-    kernel = ctypes.WinDLL('kernel32')
-    callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
-    user.CreateDesktopW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR, ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p]
-    user.CreateDesktopW.restype = wintypes.HANDLE
-    user.CloseDesktop.argtypes = [wintypes.HANDLE]
-    user.GetThreadDesktop.argtypes = [wintypes.DWORD]
-    user.GetThreadDesktop.restype = wintypes.HANDLE
-    user.SetThreadDesktop.argtypes = [wintypes.HANDLE]
-    user.EnumDesktopWindows.argtypes = [wintypes.HANDLE, callback_type, wintypes.LPARAM]
-    user.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
-    user.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
-    user.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
-    user.GetDlgItem.argtypes = [wintypes.HWND, ctypes.c_int]
-    user.GetDlgItem.restype = wintypes.HWND
-    user.IsWindowVisible.argtypes = [wintypes.HWND]
-    user.IsWindowEnabled.argtypes = [wintypes.HWND]
-    user.IsWindow.argtypes = [wintypes.HWND]
-    user.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
-    user.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
-    desktop_name = 'ShaolinLauncher' + str(time.time_ns())
-    desktop = user.CreateDesktopW(desktop_name, None, None, 0, 0x01ff, None)
-    assert desktop
-    previous = user.GetThreadDesktop(kernel.GetCurrentThreadId())
-    assert user.SetThreadDesktop(desktop)
-    try:
-        with tempfile.TemporaryDirectory(prefix='shaolin-launcher-') as directory:
+    exe = args.exe.resolve()
+    desktop = Desktop()
+    with tempfile.TemporaryDirectory(prefix='openshao-launcher-', ignore_cleanup_errors=True) as directory:
+        try:
             root = Path(directory)
             data = root / 'data'
             data.mkdir()
             settings = data / 'settings.toml'
-            settings.write_text('fps_cap = 30\ncustom_key = "preserve"\n[controller]\ndeadzone = 0.23\n')
+            settings.write_text('language="fr"\nfps_cap=30\nblur=false\naspect_ratio="16:10"\ndisplay_mode="windowed"\nwidth=800\nheight=600\n'
+                                'custom_key="preserve"\n[controller]\ndeadzone=0.23\n[controller.bindings]\na="lefttrigger"\n'
+                                '[mouse]\nsensitivity=145\ninvert_x=true\nmotion="left_stick"\n[mouse.bindings]\nside1="left_trigger"\n'
+                                'wheel_up="dpad_up"\n[keyboard.bindings]\na=[90,86]\n')
             before = settings.read_bytes()
 
-            def wait_window(process, title):
-                windows = []
+            # Opening and closing the launcher keeps the settings file byte for byte.
+            launcher = Launcher(exe, ['--configure', '--data-dir', data], root, 'close', desktop)
+            launcher.wait(lambda s: s['page'] == 'play' and s['popup'] is None, 'The launcher must open on Play')
+            for page in ('mods', 'files', 'about', 'play'):
+                launcher.send('page ' + page)
+                launcher.wait(lambda s, page=page: s['page'] == page, 'The launcher must show ' + page)
+            launcher.send('close')
+            assert launcher.exit_code() == 0
+            assert settings.read_bytes() == before, 'Closing the launcher must preserve settings'
 
-                def observe(window, _):
-                    pid = wintypes.DWORD()
-                    user.GetWindowThreadProcessId(window, ctypes.byref(pid))
-                    text = ctypes.create_unicode_buffer(256)
-                    user.GetWindowTextW(window, text, len(text))
-                    if pid.value == process.pid and text.value == title and user.IsWindowVisible(window):
-                        windows.append(window)
-                    return True
-
-                observer = callback_type(observe)
-                deadline = time.monotonic() + 15
-                while process.poll() is None and not windows and time.monotonic() < deadline:
-                    user.EnumDesktopWindows(desktop, observer, 0)
-                    time.sleep(.05)
-                assert windows, 'The expected dialog did not open: ' + title
-                return windows[0]
-
-            for save in (False, True):
-                with (root / 'process.log').open('wb') as output:
-                    process = PrivateProcess([str(args.exe.resolve()), '--configure', '--data-dir', str(data)], desktop_name, output, root)
-                    windows = []
-
-                    def observe(window, _):
-                        pid = wintypes.DWORD()
-                        user.GetWindowThreadProcessId(window, ctypes.byref(pid))
-                        text = ctypes.create_unicode_buffer(256)
-                        user.GetWindowTextW(window, text, len(text))
-                        if pid.value == process.pid and text.value == 'Shaolin Monks Recomp - Settings' and user.IsWindowVisible(window):
-                            windows.append(window)
-                        return True
-
-                    observer = callback_type(observe)
+            # A second start with the same data folder ends quietly and leaves the open launcher working.
+            first = Launcher(exe, ['--configure', '--data-dir', data], root, 'first-copy', desktop)
+            first.wait(lambda s: s['page'] == 'play', 'The first copy must open')
+            second = Launcher(exe, ['--configure', '--data-dir', data], root, 'second-copy', desktop)
+            assert second.exit_code() == 9, 'A second copy must report that OpenShao is already open'
+            assert not (second.folder / 'state.json').exists(), 'A second copy must not open a launcher'
+            assert 'already open' in second.output.read_text(encoding='utf-8', errors='replace')
+            if WINDOWS:
+                # Without a window to bring forward, a normal start says that OpenShao is open.
+                with (root / 'third-copy.log').open('wb') as output:
+                    third = PrivateProcess([str(exe), '--configure', '--data-dir', str(data)], desktop.name, output, root)
                     try:
-                        deadline = time.monotonic() + 15
-                        while process.poll() is None and not windows and time.monotonic() < deadline:
-                            user.EnumDesktopWindows(desktop, observer, 0)
-                            time.sleep(.05)
-                        assert windows, 'The settings launcher did not open'
-                        window = windows[0]
-                        combo = user.GetDlgItem(window, 2101)
-                        assert user.SendMessageW(combo, 0x0146, 0, 0) >= 6, 'Brazilian Portuguese must always be selectable'
-                        label = ctypes.create_unicode_buffer(128)
-                        user.SendMessageW(combo, 0x0148, 5, ctypes.addressof(label))
-                        assert label.value == 'Brazilian Portuguese'
-                        assert user.SendMessageW(user.GetDlgItem(window, 2204), 0x1304, 0, 0) == 7, 'The Mods tab must be present'
-                        assert not user.GetDlgItem(window, 2305), 'The launcher must not offer a frame-rate selector'
-                        if save:
-                            # Select French through the same language field the user edits.
-                            user.SendMessageW(user.GetDlgItem(window, 2101), 0x014e, 1, 0)
-                            sensitivity = ctypes.create_unicode_buffer('145')
-                            user.SendMessageW(user.GetDlgItem(window, 2901), 0x000c, 0, ctypes.addressof(sensitivity))
-                            user.SendMessageW(user.GetDlgItem(window, 2913), 0x014e, 7, 0)
-                            user.PostMessageW(window, 0x0111, 2201, 0)
-                        else:
-                            user.PostMessageW(window, 0x0010, 0, 0)
-                        assert process.wait(timeout=10) == 0
+                        desktop.close_message(third, 'OpenShao')
+                        assert third.wait(15) == 9, 'Closing the notice must end the second copy'
                     finally:
-                        if process.poll() is None:
-                            process.terminate()
-                            process.wait(timeout=5)
-                        process.close()
-                if not save:
-                    assert settings.read_bytes() == before, 'Closing the launcher must preserve settings'
-                else:
-                    config = tomllib.loads(settings.read_text())
-                    assert config['language'] == 'fr'
-                    assert config['fps_cap'] == 60, 'Saving must replace the old frame-rate preference with 60 FPS'
-                    assert config['custom_key'] == 'preserve'
-                    assert abs(config['controller']['deadzone'] - .23) < .0001
-                    assert config['mouse']['sensitivity'] == 145
-                    assert config['mouse']['bindings']['side1'] == 'left_trigger'
+                        if third.poll() is None:
+                            third.terminate()
+                        third.close()
+            first.send('page mods')
+            first.wait(lambda s: s['page'] == 'mods', 'The first copy must keep working')
+            first.send('close')
+            assert first.exit_code() == 0
+            assert settings.read_bytes() == before, 'A second copy must not change settings'
+
+            # Restoring video changes only the display settings and keeps every other preference.
+            launcher = Launcher(exe, ['--configure', '--data-dir', data], root, 'restore', desktop)
+            launcher.wait(lambda s: s['page'] == 'play', 'The launcher must open')
+            launcher.send('page files', 'restore-video')
+            launcher.wait(lambda s: s['popup'] and s['popup']['title'] == 'Video settings restored', 'Restore must confirm the change')
+            launcher.send('dismiss', 'check-updates off')
+            launcher.wait(lambda s: s['popup'] is None and not s['check_updates'], 'Turning off update checks must be visible')
+            launcher.send('close')
+            assert launcher.exit_code() == 0
+            config = tomllib.loads(settings.read_text())
+            assert config['display_mode'] == 'borderless' and config['width'] == 0 and config['height'] == 0
+            assert config['aspect_ratio'] == 'original' and config['render_percent'] == 100 and config['vsync'] is True
+            assert config['language'] == 'fr'
+            assert config['fps_cap'] == 60, 'Saving must replace the old frame-rate preference with 60 FPS'
+            assert config['bloom_effect'] is False and 'bloom' not in config and 'blur' not in config, 'Bloom must persist and migrate legacy keys'
+            assert config['custom_key'] == 'preserve'
+            assert abs(config['controller']['deadzone'] - .23) < .0001
+            assert config['controller']['bindings']['a'] == 'lefttrigger'
+            assert config['mouse']['sensitivity'] == 145 and config['mouse']['bindings']['side1'] == 'left_trigger'
+            assert config['mouse']['bindings']['wheel_up'] == 'dpad_up'
+            assert config['mouse']['invert_x'] and config['mouse']['motion'] == 'left_stick'
+            assert config['keyboard']['bindings']['a'] == [ord('Z'), ord('V')]
+            assert config['launcher']['check_updates'] is False, 'The update preference must be saved'
             saved = settings.read_bytes()
-            # Selecting a local package must install it without another confirmation.
-            game = root / 'original-game'
-            write_game_folder(game, game_files(args.game.read_bytes()))
-            payload = b'Local mod installation regression'
-            manifest = dict(schema=2, id='LocalMod', name='Local mod', summary='Synthetic package', authors=['Tester'],
-                            type='data', install_dir='packages/LocalMod', version='1.0.0', recomp='0.2.0',
-                            game={'xbe_sha256': hashlib.sha256(args.game.read_bytes()).hexdigest()}, patches=[],
-                            files=[dict(path='files/local.bin', size=len(payload), sha256=hashlib.sha256(payload).hexdigest())])
-            archive = root / 'local.tar.xz'
-            with tarfile.open(archive, 'w:xz', format=tarfile.USTAR_FORMAT) as tar:
-                for name, content in {'mod.json': json.dumps(manifest).encode(), 'files/local.bin': payload}.items():
-                    entry = tarfile.TarInfo(name)
-                    entry.size = len(content)
-                    tar.addfile(entry, io.BytesIO(content))
-            local_data = root / 'local-install'
-            with (root / 'local-install.log').open('wb') as output:
-                process = PrivateProcess([str(args.exe.resolve()), '--configure', '--data-dir', str(local_data), '--disc', str(game)], desktop_name, output, root)
-                try:
-                    window = wait_window(process, 'Shaolin Monks Recomp - Settings')
-                    tabs = user.GetDlgItem(window, 2204)
-                    for _ in range(6): user.SendMessageW(tabs, 0x0100, 0x27, 0)
-                    deadline = time.monotonic() + 30
-                    while not user.IsWindowEnabled(user.GetDlgItem(window, 3008)) and time.monotonic() < deadline:
-                        time.sleep(.02)
-                    user.PostMessageW(window, 0x0111, 3008, 0)
-                    picker = wait_window(process, 'Install a mod from file')
-                    field = user.GetDlgItem(picker, 1148)
-                    filename = ctypes.create_unicode_buffer(str(archive))
-                    user.SendMessageW(field, 0x000c, 0, ctypes.addressof(filename))
-                    user.PostMessageW(picker, 0x0111, 1, 0)
-                    registry = local_data / 'mods/installed.toml'
-                    rows = None
-                    while time.monotonic() < deadline:
-                        try:
-                            rows = tomllib.loads(registry.read_text())['mods']
-                            break
-                        except (FileNotFoundError, PermissionError):
-                            pass
-                        time.sleep(.02)
-                    assert rows is not None, 'Choosing a local mod must install it without a confirmation popup'
-                    assert len(rows) == 1 and rows[0]['id'] == 'LocalMod' and rows[0]['enabled']
-                    assert (local_data / 'mods/packages/LocalMod/files/local.bin').read_bytes() == payload
-                    user.PostMessageW(window, 0x0010, 0, 0)
-                    assert process.wait(timeout=10) == 0
-                finally:
-                    if process.poll() is None:
-                        process.terminate()
-                        process.wait(timeout=5)
-                    process.close()
-            # Installed languages must remain available when the live catalog changes.
+
+            # A local package installs directly from its file and asks before removal.
+            if args.game:
+                game = root / 'original-game'
+                write_game_folder(game, game_files(args.game.read_bytes()))
+                payload = b'Local mod installation regression'
+                manifest = dict(schema=2, id='LocalMod', name='Local mod', summary='Synthetic package', authors=['Tester'],
+                                type='data', install_dir='packages/LocalMod', version='1.0.0', recomp='0.2.0',
+                                game={'xbe_sha256': hashlib.sha256(args.game.read_bytes()).hexdigest()}, patches=[],
+                                files=[dict(path='files/local.bin', size=len(payload), sha256=hashlib.sha256(payload).hexdigest())])
+                archive = root / 'local.tar.xz'
+                with tarfile.open(archive, 'w:xz', format=tarfile.USTAR_FORMAT) as tar:
+                    for name, content in {'mod.json': json.dumps(manifest).encode(), 'files/local.bin': payload}.items():
+                        entry = tarfile.TarInfo(name)
+                        entry.size = len(content)
+                        tar.addfile(entry, io.BytesIO(content))
+                local_data = root / 'local-install'
+                launcher = Launcher(exe, ['--configure', '--data-dir', local_data, '--disc', game], root, 'local-install', desktop)
+                launcher.wait(lambda s: not s['mods_busy'], 'The catalog check must finish')
+                launcher.send('page mods', 'mod-install-file ' + str(archive))
+                launcher.wait(lambda s: any(m['id'] == 'LocalMod' and m['installed'] and m['enabled'] for m in s['mods']) and not s['mods_busy'],
+                              'Choosing a local mod must install and enable it', timeout=60)
+                rows = tomllib.loads((local_data / 'mods/installed.toml').read_text())['mods']
+                assert len(rows) == 1 and rows[0]['id'] == 'LocalMod' and rows[0]['enabled']
+                assert (local_data / 'mods/packages/LocalMod/files/local.bin').read_bytes() == payload
+                launcher.send('mod-remove LocalMod')
+                launcher.wait(lambda s: s['popup'] and s['popup']['title'] == 'Remove Local mod?', 'Removing must ask first')
+                launcher.send('dismiss')
+                launcher.wait(lambda s: s['popup'] is None, 'Cancel must keep the mod')
+                assert (local_data / 'mods/packages/LocalMod/files/local.bin').exists()
+                launcher.send('mod-remove LocalMod', 'confirm')
+                launcher.wait(lambda s: not any(m['id'] == 'LocalMod' and m['installed'] for m in s['mods']) and not s['mods_busy'],
+                              'Confirming must remove the mod')
+                assert not (local_data / 'mods/packages/LocalMod/files/local.bin').exists()
+                launcher.send('close')
+                assert launcher.exit_code() == 0
+
+            # Installed language packs are enabled and disabled in Mods without changing saved languages.
             catalog_data = root / 'new-language'
             (catalog_data / 'cache').mkdir(parents=True)
             catalog_mod = dict(id='LanguagePack_JA', name='Japanese translation', summary='Synthetic catalog entry',
                                authors=['Tester'], type='language', language='ja', language_name='Japanese',
                                install_dir='packages/LanguagePack_JA', versions=[dict(version='1.0.0', recomp='0.1.0', size=1,
-                               sha256='0' * 64, url='https://github.com/OAleex/ShaolinMonksRecompKrypt/releases/download/test/test.tar.xz')])
-            (catalog_data / 'cache/krypt.json').write_text(json.dumps(dict(schema=1,
-                game={'xbe_sha256': '48240902bf4a04eb89376217c529531032d3370749bcce91a194878cc49db74a'}, mods=[catalog_mod])))
+                               sha256='0' * 64, url='https://github.com/OAleex/OpenShao-Mods/releases/download/test/test.tar.xz')])
+            (catalog_data / 'cache/mods.json').write_text(json.dumps(dict(schema=1, game={'xbe_sha256': XBE_SHA256}, mods=[catalog_mod])))
             local_pack = catalog_data / 'mods/packages/LanguagePack_JA'
             local_pack.mkdir(parents=True)
             (local_pack / 'README.txt').write_bytes(b'test')
-            local_metadata = dict(catalog_mod, schema=2, version='1.0.0', recomp='0.2.0', patches=[],
-                game={'xbe_sha256': '48240902bf4a04eb89376217c529531032d3370749bcce91a194878cc49db74a'},
-                files=[dict(path='README.txt', size=4, sha256=hashlib.sha256(b'test').hexdigest())])
-            (catalog_data / 'mods/installed.toml').write_text('[[mods]]\nid = "LanguagePack_JA"\nversion = "1.0.0"\nenabled = false\nmanifest = '
-                + json.dumps(json.dumps(local_metadata)) + '\n')
-            with (root / 'catalog-language.log').open('wb') as output:
-                process = PrivateProcess([str(args.exe.resolve()), '--configure', '--data-dir', str(catalog_data)], desktop_name, output, root)
-                try:
-                    window = wait_window(process, 'Shaolin Monks Recomp - Settings')
-                    combo = user.GetDlgItem(window, 2101)
-                    deadline = time.monotonic() + 10
-                    while user.SendMessageW(combo, 0x0146, 0, 0) < 7 and time.monotonic() < deadline:
-                        time.sleep(.05)
-                    count = user.SendMessageW(combo, 0x0146, 0, 0)
-                    label = ctypes.create_unicode_buffer(128)
-                    selected = None
-                    for index in range(count):
-                        user.SendMessageW(combo, 0x0148, index, ctypes.addressof(label))
-                        if label.value == 'Japanese': selected = index
-                    assert selected is not None, 'An installed language must remain selectable after catalog refresh'
-                    user.SendMessageW(combo, 0x014e, selected, 0)
-                    user.PostMessageW(window, 0x0111, (1 << 16) | 2101, combo)
-                    question = wait_window(process, 'LanguagePack required')
-                    user.PostMessageW(question, 0x0111, 7, 0)
-                    deadline = time.monotonic() + 3
-                    while user.IsWindow(question) and time.monotonic() < deadline:
-                        time.sleep(.02)
-                    user.PostMessageW(window, 0x0111, 2201, 0)
-                    assert process.wait(timeout=15) == 0
-                    assert tomllib.loads((catalog_data / 'settings.toml').read_text())['language'] == 'ja'
-                finally:
-                    if process.poll() is None:
-                        process.terminate()
-                        process.wait(timeout=5)
-                    process.close()
-            # Catch a missing selection handler, lost language choice, or a download
-            # incorrectly attempted for an installed but disabled language pack.
-            for installed in (False, True):
-                flow_data = root / ('disabled-pack' if installed else 'uninstalled-pack')
-                flow_data.mkdir()
-                flow_settings = flow_data / 'settings.toml'
-                flow_settings.write_text('language = "en"\n')
-                registry = flow_data / 'mods/installed.toml'
-                marker = flow_data / 'mods/languages/LanguagePack_PT-BR/notes/keep.txt'
-                if installed:
-                    marker.parent.mkdir(parents=True)
-                    marker.write_bytes(b'keep installed files')
-                    manifest = dict(schema=1, id='LanguagePack_PT-BR', name='Test LanguagePack', summary='Synthetic installed pack',
-                                    authors=['Tester'], type='language', language='pt-BR', install_dir='languages/LanguagePack_PT-BR',
-                                    version='1.0.0', recomp='0.1.0',
-                                    game={'xbe_sha256': '48240902bf4a04eb89376217c529531032d3370749bcce91a194878cc49db74a'},
-                                    files=[dict(path='notes/keep.txt', size=20, sha256=hashlib.sha256(marker.read_bytes()).hexdigest())],
-                                    patches=[])
-                    registry.write_text('[[mods]]\nid = "LanguagePack_PT-BR"\nversion = "1.0.0"\nenabled = false\nmanifest = '
-                                        + json.dumps(json.dumps(manifest)) + '\n')
-                with (root / ('enable-language.log' if installed else 'decline-language.log')).open('wb') as output:
-                    process = PrivateProcess([str(args.exe.resolve()), '--configure', '--data-dir', str(flow_data)], desktop_name, output, root)
-                    try:
-                        window = wait_window(process, 'Shaolin Monks Recomp - Settings')
-                        combo = user.GetDlgItem(window, 2101)
-                        user.SendMessageW(combo, 0x014e, 5, 0)
-                        user.PostMessageW(window, 0x0111, (1 << 16) | 2101, combo)
-                        question = wait_window(process, 'LanguagePack required')
-                        user.PostMessageW(question, 0x0111, 6 if installed else 7, 0)
-                        deadline = time.monotonic() + 15
-                        while user.IsWindow(question) and time.monotonic() < deadline:
-                            time.sleep(.02)
-                        assert not user.IsWindow(question), 'The language question must close'
-                        tabs = user.GetDlgItem(window, 2204)
-                        if installed:
-                            assert user.SendMessageW(tabs, 0x130b, 0, 0) == 6, 'Accepting must open the Mods tab'
-                            progress = user.GetDlgItem(window, 3012)
-                            assert progress and user.IsWindowVisible(progress), 'Mods must show the installation progress bar'
-                            kind = ctypes.create_unicode_buffer(64)
-                            user.GetClassNameW(progress, kind, len(kind))
-                            assert kind.value.lower() == 'msctls_progress32', 'Progress must use the native progress control'
-                            rows = []
-                            while time.monotonic() < deadline:
-                                try:
-                                    rows = tomllib.loads(registry.read_text())['mods']
-                                except (FileNotFoundError, PermissionError):
-                                    time.sleep(.02)
-                                    continue
-                                if rows[0]['enabled']:
-                                    break
-                                time.sleep(.05)
-                            assert rows and rows[0]['enabled'], 'Accepting must enable the installed pack without another install click'
-                            assert marker.read_bytes() == b'keep installed files', 'Enabling must preserve installed content'
-                            assert user.SendMessageW(combo, 0x0147, 0, 0) == 5, 'The requested language must stay selected'
-                            enabled = ctypes.create_unicode_buffer(64)
-                            while time.monotonic() < deadline:
-                                user.GetWindowTextW(user.GetDlgItem(window, 3004), enabled, len(enabled))
-                                if enabled.value == 'Disable':
-                                    break
-                                time.sleep(.05)
-                            assert enabled.value == 'Disable', 'Mods must show that the pack is enabled'
-                            # Let the tab control send its own notification inside
-                            # the application process, without a cross-process pointer.
-                            for _ in range(6):
-                                user.SendMessageW(tabs, 0x0100, 0x25, 0)  # WM_KEYDOWN, VK_LEFT
-                            assert user.SendMessageW(tabs, 0x130b, 0, 0) == 0
-                            assert user.IsWindowVisible(combo), 'The user must be able to return to the language selector'
-                        else:
-                            assert user.SendMessageW(tabs, 0x130b, 0, 0) == 0, 'Declining must keep the General tab open'
-                            assert not registry.exists(), 'Declining must not install or enable a mod'
-                            user.SendMessageW(combo, 0x014e, 1, 0)
-                        user.PostMessageW(window, 0x0111, 2201, 0)
-                        assert process.wait(timeout=15) == 0
-                        assert tomllib.loads(flow_settings.read_text())['language'] == ('pt-BR' if installed else 'fr')
-                    finally:
-                        if process.poll() is None:
-                            process.terminate()
-                            process.wait(timeout=5)
-                        process.close()
-            with (root / 'temporary-session.log').open('wb') as output:
-                process = PrivateProcess([str(args.exe.resolve()), '--data-dir', str(data), '--disc', str(root / 'missing.iso')], desktop_name, output, root)
-                try:
-                    window = wait_window(process, 'Shaolin Monks Recomp - Settings')
-                    user.SendMessageW(user.GetDlgItem(window, 2101), 0x014e, 2, 0)
-                    user.PostMessageW(window, 0x0111, 2202, 0)
-                    question = wait_window(process, 'Unsaved settings')
-                    user.PostMessageW(question, 0x0111, 2, 0)
-                    time.sleep(.15)
-                    assert process.poll() is None and settings.read_bytes() == saved
-                    user.PostMessageW(window, 0x0111, 2202, 0)
-                    question = wait_window(process, 'Unsaved settings')
-                    user.PostMessageW(question, 0x0111, 7, 0)
-                    error = wait_window(process, 'Shaolin Monks Recomp')
-                    assert settings.read_bytes() == saved, 'Play without saving must preserve the file'
-                    time.sleep(.3)
-                    user.PostMessageW(error, 0x0010, 0, 0)
-                    assert process.wait(timeout=10) == 3
-                finally:
-                    if process.poll() is None:
-                        process.terminate()
-                        process.wait(timeout=5)
-                    process.close()
-            with (root / 'missing-language-pack.log').open('wb') as output:
-                missing_data = root / 'missing-data'
+            local_metadata = dict(catalog_mod, schema=2, version='1.0.0', recomp='0.2.0', patches=[], game={'xbe_sha256': XBE_SHA256},
+                                  files=[dict(path='README.txt', size=4, sha256=hashlib.sha256(b'test').hexdigest())])
+            catalog_registry = catalog_data / 'mods/installed.toml'
+            catalog_registry.write_text('[[mods]]\nid = "LanguagePack_JA"\nversion = "1.0.0"\nenabled = false\nmanifest = '
+                                        + json.dumps(json.dumps(local_metadata)) + '\n')
+            catalog_settings = catalog_data / 'settings.toml'
+            catalog_settings.write_text('language = "fr"\nvoice_language = "en"\n')
+            launcher = Launcher(exe, ['--configure', '--data-dir', catalog_data], root, 'catalog-language', desktop)
+            launcher.wait(lambda s: not s['mods_busy'] and any(m['id'] == 'LanguagePack_JA' and m['installed'] for m in s['mods']),
+                          'An installed language mod must appear in Mods')
+            launcher.send('page mods', 'mod-toggle LanguagePack_JA')
+            launcher.wait(lambda s: any(m['id'] == 'LanguagePack_JA' and m['enabled'] for m in s['mods']) and not s['mods_busy'],
+                          'The switch must enable the installed pack')
+            assert tomllib.loads(catalog_registry.read_text())['mods'][0]['enabled']
+            assert (local_pack / 'README.txt').read_bytes() == b'test', 'Enabling must preserve package files'
+            launcher.send('mod-toggle LanguagePack_JA')
+            launcher.wait(lambda s: any(m['id'] == 'LanguagePack_JA' and not m['enabled'] for m in s['mods']) and not s['mods_busy'],
+                          'The switch must disable the pack')
+            assert not tomllib.loads(catalog_registry.read_text())['mods'][0]['enabled']
+            assert catalog_settings.read_text() == 'language = "fr"\nvoice_language = "en"\n', 'Mod switches must not change saved languages'
+            launcher.send('close')
+            assert launcher.exit_code() == 0
+
+            # Play with a missing game reaches the game's error report.
+            launcher = Launcher(exe, ['--data-dir', data, '--disc', root / 'missing.iso'], root, 'temporary-session', desktop)
+            launcher.wait(lambda s: s['page'] == 'play', 'The launcher must open with a temporary game')
+            launcher.send('play')
+            desktop.close_message(launcher.process, 'OpenShao')
+            assert launcher.exit_code() == 3
+            assert settings.read_bytes() == saved, 'Play must preserve the settings file'
+            if WINDOWS:
+                closed = 'Error dialog closed. Application data folder: ' + str(data)
+                logs = [launcher.output, *(data / 'logs').glob('*.log')]
+                assert any(closed in log.read_text(encoding='utf-8', errors='replace') for log in logs), 'The error report must log its folder'
+
+            # A saved language without its pack keeps the player in the launcher and opens Mods.
+            for kind, text, voice in (('text', 'pt-BR', 'en'), ('voice', 'fr', 'pt-BR')):
+                missing_data = root / ('missing-' + kind)
                 missing_data.mkdir()
-                (missing_data / 'settings.toml').write_text('language = "pt-BR"\n')
-                process = PrivateProcess([str(args.exe.resolve()), '--data-dir', str(missing_data),
-                                          '--disc', str(root / 'missing.iso')], desktop_name, output, root)
-                try:
-                    window = wait_window(process, 'Shaolin Monks Recomp - Settings')
-                    user.PostMessageW(window, 0x0111, 2202, 0)
-                    warning = wait_window(process, 'LanguagePack required')
-                    user.PostMessageW(warning, 0x0111, 7, 0)
-                    deadline = time.monotonic() + 3
-                    while user.IsWindow(warning) and time.monotonic() < deadline:
-                        time.sleep(.02)
-                    assert not user.IsWindow(warning), 'The warning must close before the launcher receives Close'
-                    assert process.poll() is None, 'Play must remain in the launcher without an active LanguagePack'
-                    user.PostMessageW(window, 0x0010, 0, 0)
-                    assert process.wait(timeout=10) == 0
-                finally:
-                    if process.poll() is None:
-                        process.terminate()
-                        process.wait(timeout=5)
-                    process.close()
-            assert 'Error dialog closed. Application data folder: ' + str(data) in (
-                root / 'temporary-session.log').read_text(encoding='utf-8', errors='replace')
-            assert settings.read_bytes() == saved
+                languages = f'language = "{text}"\nvoice_language = "{voice}"\n'
+                (missing_data / 'settings.toml').write_text(languages)
+                launcher = Launcher(exe, ['--data-dir', missing_data, '--disc', root / 'missing.iso'], root, 'missing-' + kind, desktop)
+                launcher.wait(lambda s: s['page'] == 'play' and not s['mods_busy'], 'The launcher must open')
+                launcher.send('play')
+                state = launcher.wait(lambda s: s['popup'] and s['popup']['title'] == 'Language pack required',
+                                      'A missing ' + kind + ' pack must be reported')
+                assert state['page'] == 'mods', 'A missing ' + kind + ' pack must direct the player to Mods'
+                assert state['result'] == -1, 'Play must remain in the launcher without an enabled language pack'
+                launcher.send('dismiss')
+                launcher.wait(lambda s: s['popup'] is None, 'The message must close')
+                assert (missing_data / 'settings.toml').read_text() == languages, 'Missing packs must not reset saved languages'
+                launcher.send('close')
+                assert launcher.exit_code() == 0
+
+            # A development language pack does not bring back a language selector or change settings.
             pack = root / 'LanguagePack_PT-BR'
             pack.mkdir()
-            with (root / 'language-pack.log').open('wb') as output:
-                process = PrivateProcess([str(args.exe.resolve()), '--configure', '--data-dir', str(data),
-                                          '--language-pack', str(pack)], desktop_name, output, root)
+            launcher = Launcher(exe, ['--configure', '--data-dir', data, '--language-pack', pack], root, 'language-pack', desktop)
+            launcher.wait(lambda s: s['page'] == 'play', 'The launcher must open with a development pack')
+            launcher.send('close')
+            assert launcher.exit_code() == 0
+            config = tomllib.loads(settings.read_text())
+            assert config['language'] == 'fr' and config['custom_key'] == 'preserve'
+        except BaseException:
+            if Launcher.started:
+                Launcher.started[-1].report(desktop)
+            raise
+        finally:
+            for launcher in Launcher.started:
                 try:
-                    window = wait_window(process, 'Shaolin Monks Recomp - Settings')
-                    combo = user.GetDlgItem(window, 2101)
-                    assert user.SendMessageW(combo, 0x0146, 0, 0) >= 6
-                    label = ctypes.create_unicode_buffer(128)
-                    user.SendMessageW(combo, 0x0148, 5, ctypes.addressof(label))
-                    assert label.value == 'Brazilian Portuguese'
-                    user.SendMessageW(combo, 0x014e, 5, 0)
-                    assert user.SendMessageW(combo, 0x0147, 0, 0) == 5
-                    user.PostMessageW(window, 0x0111, 2201, 0)
-                    assert process.wait(timeout=10) == 0
-                    config = tomllib.loads(settings.read_text())
-                    assert config['language'] == 'pt-BR'
-                    assert config['custom_key'] == 'preserve'
-                finally:
-                    if process.poll() is None:
-                        process.terminate()
-                        process.wait(timeout=5)
-                    process.close()
-    finally:
-        user.SetThreadDesktop(previous)
-        user.CloseDesktop(desktop)
-    print('PASS: launcher settings, fixed 60 FPS without a selector, direct local mod installation, language packs, and post-error folder handling')
+                    launcher.close()
+                except Exception as error:
+                    print('Cannot end a launcher:', error, file=sys.stderr)
+            desktop.close()
+    print('PASS: launcher pages, settings preservation, video recovery, update preference, local mods, language packs and play errors')
 
 
 if __name__ == '__main__':

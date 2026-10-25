@@ -2,7 +2,7 @@
 #include <array>
 #include <limits>
 #include <stdexcept>
-namespace shaolin::mods {
+namespace openshao::mods {
 namespace {
 constexpr size_t limit=512*1024*1024;
 [[noreturn]] void Bad() { throw std::runtime_error("Invalid or unsupported xdelta patch"); }

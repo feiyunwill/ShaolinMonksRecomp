@@ -11,7 +11,7 @@
 #include <stdexcept>
 #include <thread>
 namespace fs=std::filesystem;
-using namespace shaolin::mods;
+using namespace openshao::mods;
 namespace {
 fs::path fixtures;
 std::atomic<bool> corrupt{false},offline{false};
@@ -33,11 +33,11 @@ BrowserState Ready(Browser& browser){
 }
 void Catalog(unsigned version){fs::copy_file(fixtures/("catalog-"+std::to_string(version)+".json"),fixtures/"catalog.json",fs::copy_options::overwrite_existing);}
 }
-namespace shaolin::mods {
+namespace openshao::mods {
 void Download(std::string_view url,const fs::path& file,uint64_t maximum,const Progress& progress){
     if(offline)throw std::runtime_error("Controlled network failure");
     // master advances with each release; the HEAD alias can retain an older catalog.
-    const std::string_view repository="https://raw.githubusercontent.com/OAleex/ShaolinMonksRecompKrypt/";
+    const std::string_view repository="https://raw.githubusercontent.com/OAleex/OpenShao-Mods/";
     const bool catalog_request=url.starts_with(repository);
     if(catalog_request&&url.substr(repository.size())!="HEAD/mods.json"&&url.substr(repository.size())!="master/mods.json")
         throw std::runtime_error("Mod server returned HTTP 404");
@@ -53,7 +53,6 @@ int main(int argc,char** argv){
         Check(argc==2,"Expected fixture folder");fixtures=fs::absolute(argv[1]);Catalog(1);
         Browser browser(fixtures/"data/mods");auto state=Ready(browser);
         Check(state.error.empty()&&state.catalog.size()==2,"Opening the browser must discover all catalog mods");
-        Check(LanguageChoices(state).size()==7&&LanguageProvider(state,"ja")=="Japanese","Catalog languages must appear before installation");
         browser.Install("Texture",fixtures/"game");state=Ready(browser);
         Check(state.error.empty()&&state.installed.size()==1&&state.installed[0].mod.version=="1.0.0","Catalog installation must use the inspected archive");
         const auto installed=fixtures/"data/mods/packages/Texture/files/texture.bin";

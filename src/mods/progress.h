@@ -4,7 +4,7 @@
 #include <cstdint>
 #include <stdexcept>
 #include <algorithm>
-namespace shaolin::mods {
+namespace openshao::mods {
 using Progress=std::function<bool(std::string_view stage,uint64_t done,uint64_t total)>;
 inline constexpr uint64_t ProgressTotal=10000;
 // Nested stages use the same scale, so byte and file counters never reset the operation.

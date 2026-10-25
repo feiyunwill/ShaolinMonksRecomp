@@ -23,7 +23,7 @@ FONT_REGIONS = (("small.xpr", 0x51D3E8, 0x4800), ("large.xpr", 0x532018, 0x20800
 MOVIES = ("opening", "end006", "end011", "final")
 PACK_README = """LanguagePack PT-BR
 
-Brazilian Portuguese text, subtitles, voices and fonts for Shaolin Monks Recomp.
+Brazilian Portuguese text, subtitles, voices and fonts for OpenShao.
 
 Installation
 
@@ -336,7 +336,7 @@ def build_pack(source: Path, game: Path, output: Path, encoder: Path, report: Pa
         (stage / "README.txt").write_text(PACK_README, encoding="utf-8")
         inventory = [{"path": p.relative_to(stage).as_posix(), "size": p.stat().st_size,
                       "sha256": sha256_file(p)} for p in sorted(stage.rglob("*")) if p.is_file()]
-        result = {"format": "shaolin-loose-language-resources-v1", "language": "pt-BR",
+        result = {"format": "openshao-loose-language-resources-v1", "language": "pt-BR",
                   "runtime_integration": "native_direct_pack", "original_xbe_sha256": ORIGINAL_XBE_SHA256,
                   "translation_xbe_sha256": TRANSLATED_XBE_SHA256,
                   "voices": sum(row["path"].startswith("audio/voices/") for row in copied),

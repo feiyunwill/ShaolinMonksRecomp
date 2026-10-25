@@ -1,7 +1,5 @@
 #pragma once
-// The DXGI format names the shared vertex code uses, with their documented
-// numeric values. Linux builds have no Windows SDK; the Vulkan renderer maps
-// these values to Vulkan formats.
+// Preserve the documented DXGI numeric values used by shared vertex code.
 enum DXGI_FORMAT {
     DXGI_FORMAT_UNKNOWN = 0,
     DXGI_FORMAT_R32G32B32A32_FLOAT = 2,

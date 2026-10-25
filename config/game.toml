@@ -5,7 +5,7 @@ path = "assets/default.xbe"
 title = 0x4D570029
 entry = 0xF40CA
 xdk = 5849
-out = "generated/shaolin"
+out = "generated/openshao"
 partitions = 128
 code_sections = [".text", "D3D", "XGRPH", "DSOUND", "D3DX", "PSFD00", "WMADEC", "XPP"]
 

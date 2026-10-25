@@ -1,7 +1,7 @@
 #include "window.h"
 #include <algorithm>
 #include <cmath>
-bool shaolin::window::ClientBounds(HWND hwnd, RECT& bounds) {
+bool openshao::window::ClientBounds(HWND hwnd, RECT& bounds) {
     RECT client{}; MONITORINFO monitor{sizeof(monitor)};
     if (!GetClientRect(hwnd, &client) || !GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &monitor)) return false;
     POINT top{client.left, client.top}, bottom{client.right, client.bottom};
@@ -9,7 +9,7 @@ bool shaolin::window::ClientBounds(HWND hwnd, RECT& bounds) {
     const RECT screen{top.x, top.y, bottom.x, bottom.y};
     return IntersectRect(&bounds, &screen, &monitor.rcMonitor) != FALSE;
 }
-bool shaolin::window::Place(HWND hwnd, bool windowed, unsigned width, unsigned height) {
+bool openshao::window::Place(HWND hwnd, bool windowed, unsigned width, unsigned height) {
     MONITORINFO monitor{sizeof(monitor)};
     if (!GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &monitor)) return false;
     const auto style = (windowed ? WS_OVERLAPPEDWINDOW : WS_POPUP) |

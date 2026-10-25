@@ -5,7 +5,7 @@
 
 int main() {
     using namespace std::chrono;
-    shaolin::VBlankClock clock;
+    openshao::VBlankClock clock;
     // A notification after 3ms must release the wait immediately. The old
     // unconditional 16ms sleep introduced needless latency on every movie frame.
     std::thread producer([&] {

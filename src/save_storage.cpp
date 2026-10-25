@@ -23,7 +23,7 @@
 #include "save_storage.h"
 
 namespace fs = std::filesystem;
-namespace shaolin::storage {
+namespace openshao::storage {
 namespace {
 fs::path g_root;
 std::mutex g_backups;
@@ -138,8 +138,7 @@ bool PrepareDirectory(const fs::path& legacy, const fs::path& destination, std::
     try {
         if (fs::exists(destination)) {
             if (!fs::is_directory(destination)) throw std::runtime_error("save destination is not a directory");
-            // An empty destination may have been created by a previous launch. It
-            // must not hide a legacy campaign that has not yet been migrated.
+            // An empty destination must not hide an unmigrated legacy campaign.
             if (legacy.empty() || !fs::exists(legacy) || fs::is_empty(legacy)) return true;
             if (!fs::is_empty(destination)) return true; // Preserve existing progress.
         }
@@ -187,7 +186,7 @@ bool PrepareDirectory(const fs::path& legacy, const fs::path& destination, std::
 fs::path SavedGamesRoot(std::string& error, bool create) {
     // The XDG data directory keeps saves beside the application data, separate from settings.
     try {
-        const auto root = UserDataHome() / "Shaolin Monks Recomp" / "saves";
+        const auto root = UserDataHome() / "OpenShao" / "saves";
         if (create) fs::create_directories(root);
         return root;
     } catch (const std::exception& e) { error = e.what(); return {}; }
@@ -195,9 +194,10 @@ fs::path SavedGamesRoot(std::string& error, bool create) {
 DirectoryLock::~DirectoryLock() {
     if (handle_) { const int fd = int(reinterpret_cast<intptr_t>(handle_)) - 1; flock(fd, LOCK_UN); close(fd); }
 }
-bool DirectoryLock::Acquire(const fs::path& root, std::string& error) {
+bool DirectoryLock::Acquire(const fs::path& root, std::string& error, bool* in_use) {
     const int fd = open((root / ".lock").c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0644);
     if (fd < 0 || flock(fd, LOCK_EX | LOCK_NB) != 0) {
+        if (in_use) *in_use = fd >= 0 && errno == EWOULDBLOCK;
         if (fd >= 0) close(fd);
         error = "cannot lock save directory; another game may be using it (errno " + std::to_string(errno) + ")";
         return false;
@@ -209,12 +209,17 @@ fs::path SavedGamesRoot(std::string& error, bool create) {
     PWSTR path = nullptr;
     const auto result = SHGetKnownFolderPath(FOLDERID_SavedGames, create ? KF_FLAG_CREATE : KF_FLAG_DEFAULT, nullptr, &path);
     if (FAILED(result)) { error = "Windows Saved Games folder unavailable (" + std::to_string(result) + ")"; return {}; }
-    fs::path out(path); CoTaskMemFree(path); return out / L"Shaolin Monks";
+    fs::path out(path); CoTaskMemFree(path); return out / L"OpenShao";
 }
 DirectoryLock::~DirectoryLock() { if (handle_) CloseHandle(handle_); }
-bool DirectoryLock::Acquire(const fs::path& root, std::string& error) {
+bool DirectoryLock::Acquire(const fs::path& root, std::string& error, bool* in_use) {
     HANDLE h = CreateFileW((root / ".lock").c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (h == INVALID_HANDLE_VALUE) { error = "cannot lock save directory; another game may be using it (Windows error " + std::to_string(GetLastError()) + ")"; return false; }
+    if (h == INVALID_HANDLE_VALUE) {
+        const DWORD code = GetLastError();
+        if (in_use) *in_use = code == ERROR_SHARING_VIOLATION || code == ERROR_LOCK_VIOLATION;
+        error = "cannot lock save directory; another game may be using it (Windows error " + std::to_string(code) + ")";
+        return false;
+    }
     handle_ = h; return true;
 }
 #endif

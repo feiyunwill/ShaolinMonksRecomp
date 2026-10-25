@@ -10,7 +10,7 @@
 #include <windows.h>
 #endif
 namespace fs=std::filesystem;
-using namespace shaolin;
+using namespace openshao;
 void Require(bool ok,const char* why){if(!ok)throw std::runtime_error(why);}
 std::string Read(const fs::path& p){std::ifstream f(p,std::ios::binary);return {std::istreambuf_iterator<char>(f),{}};}
 int main(int argc,char** argv){try{

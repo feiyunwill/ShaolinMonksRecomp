@@ -6,7 +6,7 @@
 #include <span>
 #include <vector>
 
-namespace shaolin::language {
+namespace openshao::language {
 using ReadAt = std::function<bool(uint64_t, std::span<uint8_t>)>;
 
 // Immutable after Seal. Gaps read as zeroes; sources remain owned by their readers.

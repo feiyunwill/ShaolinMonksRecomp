@@ -1,13 +1,16 @@
-"""Check the first-run setup on a private desktop, without opening the game."""
+"""Check game selection: the launcher opens on its game page until a usable game is chosen.
+
+The launcher runs with --launcher-test, which keeps the real launcher logic and drawing but opens no window.
+On Windows the processes run on a private desktop. --setup keeps the system dialog for runs without the launcher.
+"""
 import argparse
-import ctypes
-from ctypes import wintypes
 from pathlib import Path
+import sys
 import tempfile
 import time
 import tomllib
-from recomp_error_dialog_test import PrivateProcess
 from recomp_game_fixture import game_files, write_game_folder
+from recomp_launcher_test import Desktop, Launcher
 
 
 def main():
@@ -15,144 +18,101 @@ def main():
     parser.add_argument('--exe', required=True, type=Path)
     parser.add_argument('--xbe', type=Path)
     args = parser.parse_args()
-    user = ctypes.WinDLL('user32', use_last_error=True)
-    kernel = ctypes.WinDLL('kernel32')
-    callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
-    user.CreateDesktopW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR, ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p]
-    user.CreateDesktopW.restype = wintypes.HANDLE
-    user.CloseDesktop.argtypes = [wintypes.HANDLE]
-    user.GetThreadDesktop.argtypes = [wintypes.DWORD]
-    user.GetThreadDesktop.restype = wintypes.HANDLE
-    user.SetThreadDesktop.argtypes = [wintypes.HANDLE]
-    user.EnumDesktopWindows.argtypes = [wintypes.HANDLE, callback_type, wintypes.LPARAM]
-    user.EnumChildWindows.argtypes = [wintypes.HWND, callback_type, wintypes.LPARAM]
-    user.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
-    user.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
-    user.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
-    user.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
-    user.GetDlgItem.argtypes = [wintypes.HWND, ctypes.c_int]
-    user.GetDlgItem.restype = wintypes.HWND
-    user.IsWindowVisible.argtypes = [wintypes.HWND]
-    name = 'ShaolinSetupTest' + str(time.time_ns())
-    desktop = user.CreateDesktopW(name, None, None, 0, 0x01ff, None)
-    assert desktop, ctypes.get_last_error()
-    previous = user.GetThreadDesktop(kernel.GetCurrentThreadId())
-    assert user.SetThreadDesktop(desktop), ctypes.get_last_error()
-    try:
-        with tempfile.TemporaryDirectory(prefix='shaolin-setup-dialog-') as directory:
+    exe = args.exe.resolve()
+    desktop = Desktop()
+    with tempfile.TemporaryDirectory(prefix='openshao-setup-', ignore_cleanup_errors=True) as directory:
+        try:
             root = Path(directory)
-            with (root / 'process.log').open('wb') as output:
-                process = PrivateProcess([str(args.exe.resolve()), '--data-dir', str(root / 'data')], name, output, root)
-                dialogs, launchers, texts = [], [], set()
+            data = root / 'data'
+            selection = data / 'game-source.toml'
 
-                def collect(window, _):
-                    text = ctypes.create_unicode_buffer(8192)
-                    user.GetWindowTextW(window, text, len(text))
-                    texts.add(text.value)
-                    return True
+            # The first start opens on the game page, and the tabs stay closed until a game is chosen.
+            launcher = Launcher(exe, ['--data-dir', data], root, 'first-run', desktop)
+            launcher.wait(lambda s: s['page'] == 'game' and not s['game_busy'], 'The first start must open on game selection')
+            launcher.send('page files', 'game-back', 'play')
+            time.sleep(.5)
+            state = launcher.wait(lambda s: True, 'The launcher must keep running')
+            assert state['page'] == 'game' and state['result'] == -1, ('Game selection must stay open without a game', state)
 
-                child_callback = callback_type(collect)
+            # An unusable choice reports the problem and keeps the page.
+            launcher.send('choose-game ' + str(root / 'missing.iso'))
+            state = launcher.wait(lambda s: s['game_error'] and not s['game_busy'], 'An unusable game must be reported')
+            assert state['page'] == 'game', state
+            launcher.send('close')
+            assert launcher.exit_code() == 0
+            assert not selection.exists(), 'A failed choice must not be remembered'
+            assert not (data / 'game').exists()
+            assert not (data / 'settings.toml').exists()
 
-                def observe(window, _):
-                    pid = wintypes.DWORD()
-                    user.GetWindowThreadProcessId(window, ctypes.byref(pid))
-                    if pid.value == process.pid:
-                        title = ctypes.create_unicode_buffer(256)
-                        user.GetWindowTextW(window, title, len(title))
-                        if title.value == 'Shaolin Monks Recomp - Settings':
-                            launchers.append(window)
-                        if title.value == 'Shaolin Monks Recomp':
-                            user.EnumChildWindows(window, child_callback, 0)
-                            if any('Choose a game file' in text for text in texts):
-                                dialogs.append(window)
-                    return True
+            # Settings-only runs never ask for the game.
+            launcher = Launcher(exe, ['--configure', '--data-dir', data], root, 'configure', desktop)
+            launcher.wait(lambda s: s['page'] == 'play', 'Settings-only runs must open on Play')
+            launcher.send('close')
+            assert launcher.exit_code() == 0
 
-                observer = callback_type(observe)
-                try:
-                    deadline = time.monotonic() + 20
-                    while process.poll() is None and time.monotonic() < deadline and not dialogs and not launchers:
-                        user.EnumDesktopWindows(desktop, observer, 0)
-                        time.sleep(.05)
-                    assert not launchers, 'First launch must select game files before opening settings'
-                    assert dialogs, ('The integrated setup did not open', texts,
-                                     (root / 'process.log').read_text(encoding='utf-8', errors='replace')[-3000:])
-                    assert any('Choose an extracted game folder' in text for text in texts), texts
-                    user.PostMessageW(dialogs[0], 0x0010, 0, 0)
-                    process.wait(timeout=10)
-                    assert not (root / 'data/game-source.toml').exists()
-                    assert not (root / 'data/game').exists()
-                finally:
-                    if process.poll() is None:
-                        process.terminate()
-                        process.wait(timeout=5)
-                    process.close()
             if args.xbe:
                 game = root / 'game files'
                 game.mkdir()
                 write_game_folder(game, game_files(args.xbe.read_bytes()))
 
-                def wait_window(process, expected):
-                    windows = []
+                # Choosing a complete folder remembers it and opens Play.
+                launcher = Launcher(exe, ['--data-dir', data], root, 'select', desktop)
+                launcher.wait(lambda s: s['page'] == 'game', 'The first start must open on game selection')
+                launcher.send('choose-game ' + str(game))
+                state = launcher.wait(lambda s: s['page'] == 'play' and not s['game_busy'], 'A valid game must open Play', timeout=60)
+                assert Path(state['source']) == game, state
+                assert Path(tomllib.loads(selection.read_text())['disc']) == game
+                remembered = selection.read_bytes()
+                launcher.send('close')
+                assert launcher.exit_code() == 0
+                assert not (data / 'settings.toml').exists()
 
-                    def find(window, _):
-                        pid = wintypes.DWORD()
-                        user.GetWindowThreadProcessId(window, ctypes.byref(pid))
-                        title = ctypes.create_unicode_buffer(512)
-                        user.GetWindowTextW(window, title, len(title))
-                        if pid.value == process.pid and title.value == expected and user.IsWindowVisible(window):
-                            windows.append(window)
-                        return True
+                # A remembered game survives repeated launcher restarts.
+                for restart in range(3):
+                    launcher = Launcher(exe, ['--data-dir', data], root, 'remembered-' + str(restart), desktop)
+                    state = launcher.wait(lambda s: s['page'] == 'play', 'A remembered game must open Play')
+                    assert Path(state['source']) == game, state
+                    launcher.send('page files', 'choose-game')
+                    launcher.wait(lambda s: s['page'] == 'game', 'Change must open game selection')
+                    launcher.send('game-back')
+                    launcher.wait(lambda s: s['page'] == 'files', 'Back must return to Files')
+                    launcher.send('close')
+                    assert launcher.exit_code() == 0
+                    assert selection.read_bytes() == remembered, 'Restarting must preserve the selected game'
 
-                    callback = callback_type(find)
-                    deadline = time.monotonic() + 15
-                    while process.poll() is None and time.monotonic() < deadline and not windows:
-                        user.EnumDesktopWindows(desktop, callback, 0)
-                        time.sleep(.05)
-                    assert windows, 'Expected startup window: ' + expected
-                    return windows[0]
+                # An earlier faulty migration could remember the data folder as the game.
+                selection.write_text("disc = '" + data.as_posix() + "'\n", encoding='utf-8')
+                launcher = Launcher(exe, ['--data-dir', data], root, 'invalid-remembered', desktop)
+                state = launcher.wait(lambda s: s['page'] == 'game', 'An incomplete remembered folder must reopen game selection')
+                assert 'default.xbe' in state['game_error'], state
+                launcher.send('choose-game ' + str(game))
+                launcher.wait(lambda s: s['page'] == 'play' and not s['game_busy'], 'A valid choice must recover the saved selection', timeout=60)
+                assert Path(tomllib.loads(selection.read_text())['disc']) == game
+                remembered = selection.read_bytes()
+                launcher.send('close')
+                assert launcher.exit_code() == 0
 
-                for stage in ('select', 'remembered', 'setup', 'unavailable'):
-                    if stage == 'unavailable':
-                        game.rename(root / 'moved game files')
-                    with (root / f'{stage}.log').open('wb') as output:
-                        command = [str(args.exe.resolve()), '--data-dir', str(root / 'data')]
-                        if stage == 'setup':
-                            command.append('--setup')
-                        process = PrivateProcess(command, name, output, root)
-                        try:
-                            if stage == 'select':
-                                dialog = wait_window(process, 'Shaolin Monks Recomp')
-                                assert user.PostMessageW(dialog, 0x0466, 100, 0)  # TDM_CLICK_BUTTON
-                                picker = wait_window(process, 'Shaolin Monks Recomp - Select your game')
-                                field = user.GetDlgItem(picker, 1148)
-                                assert field, 'The file chooser must expose its filename field'
-                                source = ctypes.create_unicode_buffer(str(game / 'default.xbe'))
-                                assert user.SendMessageW(field, 0x000c, 0, ctypes.addressof(source))
-                                assert user.PostMessageW(picker, 0x0111, 1, 0)
-                                launcher = wait_window(process, 'Shaolin Monks Recomp - Settings')
-                                selection = root / 'data/game-source.toml'
-                                assert Path(tomllib.loads(selection.read_text())['disc']) == game
-                                remembered = selection.read_bytes()
-                                assert not (root / 'data/settings.toml').exists()
-                                assert user.PostMessageW(launcher, 0x0010, 0, 0)
-                            elif stage == 'remembered':
-                                launcher = wait_window(process, 'Shaolin Monks Recomp - Settings')
-                                assert user.PostMessageW(launcher, 0x0010, 0, 0)
-                            else:
-                                dialog = wait_window(process, 'Shaolin Monks Recomp')
-                                assert user.PostMessageW(dialog, 0x0010, 0, 0)
-                            process.wait(timeout=10)
-                            assert (root / 'data/game-source.toml').read_bytes() == remembered
-                            assert not (root / 'data/settings.toml').exists()
-                        finally:
-                            if process.poll() is None:
-                                process.terminate()
-                                process.wait(timeout=5)
-                            process.close()
-    finally:
-        user.SetThreadDesktop(previous)
-        user.CloseDesktop(desktop)
-    print('PASS: source selection precedes settings; valid selections are remembered, missing sources reopen setup, and cancellation preserves data')
+                # A game that moved reopens selection and keeps the previous choice until a new one succeeds.
+                game.rename(root / 'moved game files')
+                launcher = Launcher(exe, ['--data-dir', data], root, 'unavailable', desktop)
+                state = launcher.wait(lambda s: s['page'] == 'game', 'A missing game must reopen selection')
+                assert 'no longer' in state['game_error'], state
+                launcher.send('close')
+                assert launcher.exit_code() == 0
+                assert selection.read_bytes() == remembered
+                assert not (data / 'settings.toml').exists()
+        except BaseException:
+            if Launcher.started:
+                Launcher.started[-1].report(desktop)
+            raise
+        finally:
+            for launcher in Launcher.started:
+                try:
+                    launcher.close()
+                except Exception as error:
+                    print('Cannot end a launcher:', error, file=sys.stderr)
+            desktop.close()
+    print('PASS: the launcher opens on game selection until a usable game is chosen; failed choices are not remembered')
 
 
 if __name__ == '__main__':

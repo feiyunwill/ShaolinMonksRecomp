@@ -49,7 +49,7 @@ static int RunCase(bool pretransformed, bool quad, float scale=1, int fallback=0
     if (!Ok(device->CreateVertexShader(vs_code->GetBufferPointer(), vs_code->GetBufferSize(), nullptr, &vs), "VS") ||
         !Ok(device->CreatePixelShader(ps_code->GetBufferPointer(), ps_code->GetBufferSize(), nullptr, &ps), "PS")) return 2;
     if (quad) {
-        auto gs_code=Compile(shaolin::AtlasBoundsHlsl(),"gs_5_0");
+        auto gs_code=Compile(openshao::AtlasBoundsHlsl(),"gs_5_0");
         if (!gs_code || !Ok(device->CreateGeometryShader(gs_code->GetBufferPointer(),gs_code->GetBufferSize(),nullptr,&gs),"GS")) return 2;
     }
     D3D11_INPUT_ELEMENT_DESC elements[] = {
@@ -69,6 +69,10 @@ static int RunCase(bool pretransformed, bool quad, float scale=1, int fallback=0
         if (menu==6) {
             pixels.fill(0xFF4080C0);
             for (int y=0;y<16;++y) for (int x=13;x<16;++x) pixels[y*16+x]=0;
+        }
+        if (menu==7) {
+            pixels.fill(0xFF4080C0);
+            for (int x=0;x<16;++x) pixels[15*16+x]=0xFFFFFFFF;
         }
     }
     D3D11_TEXTURE2D_DESC td{};
@@ -101,6 +105,12 @@ static int RunCase(bool pretransformed, bool quad, float scale=1, int fallback=0
             // Measured UVs from the one retail fire-animation frame that flickers.
             vertices[i][8]=(i&1)?-2.000021457672119f:-3.000000238418579f;
             vertices[i][9]=(i&2)?-1.9998126029968262f:-3.f;
+        }
+        if (menu==7) {
+            // Brightness frame: the horizontal texture is rotated clockwise
+            // onto the right edge, with V running from -8 to -9 across X.
+            vertices[i][8]=(i&2)?1.f:0.f;
+            vertices[i][9]=(i&1)?-9.f:-8.f;
         }
     }
     if (menu==4) for (int i=0;i<4;++i) {
@@ -141,7 +151,7 @@ static int RunCase(bool pretransformed, bool quad, float scale=1, int fallback=0
         a.elements[9]={DXGI_FORMAT_R32G32B32A32_FLOAT,0,32};
         a.buffers[0]={reinterpret_cast<const uint8_t*>(vertices),sizeof vertices,48};
         sd.Filter=D3D11_FILTER_MIN_MAG_MIP_LINEAR;
-        sd.AddressU=sd.AddressV=sd.AddressW=shaolin::UnitSpriteTexcoords(a)?D3D11_TEXTURE_ADDRESS_CLAMP:D3D11_TEXTURE_ADDRESS_WRAP;
+        sd.AddressU=sd.AddressV=sd.AddressW=openshao::UnitSpriteTexcoords(a)?D3D11_TEXTURE_ADDRESS_CLAMP:D3D11_TEXTURE_ADDRESS_WRAP;
     }
     ComPtr<ID3D11SamplerState> sampler;
     if (!Ok(device->CreateSamplerState(&sd,&sampler),"sampler")) return 2;
@@ -206,7 +216,7 @@ static int RunCase(bool pretransformed, bool quad, float scale=1, int fallback=0
         std::memcpy(&left,static_cast<const uint8_t*>(mapped.pData)+UINT(8*scale)*mapped.RowPitch,4);
         context->Unmap(readback.Get(),0);
         // A mirrored image legitimately begins with its last (white) texel.
-        const auto expected=menu==3?0xFFFFFFFF:0xFF4080C0;
+        const auto expected=(menu==3 || menu==7)?0xFFFFFFFF:0xFF4080C0;
         if (corner!=expected || left!=expected) {
             std::fprintf(stderr,"Menu mode=%d scale=%g: outer border/first texel got %08X/%08X\n",menu,scale,corner,left);
             return 1;
@@ -255,21 +265,21 @@ int main() {
     sprite.buffers[0]={reinterpret_cast<const uint8_t*>(uv),sizeof uv,16};
     sprite.elements[0]={DXGI_FORMAT_R32G32B32A32_FLOAT,1,0};
     sprite.buffers[1]={reinterpret_cast<const uint8_t*>(positions),sizeof positions,16};
-    if (!shaolin::UnitSpriteTexcoords(sprite)) return 1;
+    if (!openshao::UnitSpriteTexcoords(sprite)) return 1;
     for (auto& v:uv) { v[0]-=3; v[1]-=2; }
-    if (!shaolin::UnitSpriteTexcoords(sprite)) { std::fputs("FAIL: menu's single negative UV tile must be recognized\n",stderr); result=1; }
+    if (!openshao::UnitSpriteTexcoords(sprite)) { std::fputs("FAIL: menu's single negative UV tile must be recognized\n",stderr); result=1; }
     for (auto& v:uv) { v[0]+=3; v[1]+=2; }
     const float animation_uv[3][4]={{-3.000000238418579f,-3.f,0,1},
         {-2.000021457672119f,-3.f,0,1},{-2.000021457672119f,-1.9998126029968262f,0,1}};
     std::memcpy(uv,animation_uv,sizeof uv);
-    if (!shaolin::UnitSpriteTexcoords(sprite)) { std::fputs("FAIL: one retail animation frame disables the sprite edge guard\n",stderr); result=1; }
+    if (!openshao::UnitSpriteTexcoords(sprite)) { std::fputs("FAIL: one retail animation frame disables the sprite edge guard\n",stderr); result=1; }
     const float neutral_uv[3][4]={{0,0,0,1},{1,0,0,1},{1,1,0,1}};
     std::memcpy(uv,neutral_uv,sizeof uv);
-    uv[0][0]=-1; if (shaolin::UnitSpriteTexcoords(sprite)) return 1; uv[0][0]=0;
-    uv[2][0]=3; if (shaolin::UnitSpriteTexcoords(sprite)) return 1; uv[2][0]=1;
-    uv[0][3]=.5f; if (shaolin::UnitSpriteTexcoords(sprite)) return 1; uv[0][3]=1;
-    positions[1][1]=4; if (shaolin::UnitSpriteTexcoords(sprite)) return 1; positions[1][1]=0;
-    sprite.pretransformed=false; if (shaolin::UnitSpriteTexcoords(sprite)) return 1;
+    uv[0][0]=-1; if (openshao::UnitSpriteTexcoords(sprite)) return 1; uv[0][0]=0;
+    uv[2][0]=3; if (openshao::UnitSpriteTexcoords(sprite)) return 1; uv[2][0]=1;
+    uv[0][3]=.5f; if (openshao::UnitSpriteTexcoords(sprite)) return 1; uv[0][3]=1;
+    positions[1][1]=4; if (openshao::UnitSpriteTexcoords(sprite)) return 1; positions[1][1]=0;
+    sprite.pretransformed=false; if (openshao::UnitSpriteTexcoords(sprite)) return 1;
     for (bool screen : {true,false}) for (bool quad : {false,true}) {
         int code=RunCase(screen,quad);
         if (code) result=code;
@@ -288,6 +298,7 @@ int main() {
     }
     for (float scale : {1.5f,2.f,2.1f,2.25f}) if (RunCase(true,true,scale,0,5)) result=1;
     for (float scale : {1.5f,2.f,2.1f,2.25f}) if (RunCase(true,true,scale,0,6)) result=1;
+    for (float scale : {1.f,1.5f,2.f,2.25f}) if (RunCase(true,true,scale,0,7)) result=1;
     if (RunCase(true,true,2.25f,0,4)) result=1;
     if (!result) std::puts("PASS: menu FLOAT4 sprites clamp without wrapping; upscaled outer borders stay covered");
     return result;

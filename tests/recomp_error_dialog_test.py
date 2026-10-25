@@ -90,14 +90,14 @@ def main():
     user.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
     user.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
     user.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
-    desktop_name = 'ShaolinErrorTest' + str(time.time_ns())
+    desktop_name = 'OpenShaoErrorTest' + str(time.time_ns())
     desktop = user.CreateDesktopW(desktop_name, None, None, 0, 0x01FF, None)
     assert desktop, 'Could not create the private test desktop'
     kernel = ctypes.WinDLL('kernel32')
     original_desktop = user.GetThreadDesktop(kernel.GetCurrentThreadId())
     assert user.SetThreadDesktop(desktop), ctypes.get_last_error()
     try:
-        with tempfile.TemporaryDirectory(prefix='shaolin-error-dialog-') as folder:
+        with tempfile.TemporaryDirectory(prefix='openshao-error-dialog-') as folder:
             root = Path(folder)
             data = root / 'app-data-\u00e7'
             with (root / 'process.log').open('wb') as output:
@@ -124,7 +124,7 @@ def main():
                     if owner.value == process.pid:
                         title = text(window)
                         observed.add(title)
-                        if title == 'Shaolin Monks Recomp':
+                        if title == 'OpenShao':
                             user.EnumChildWindows(window, child_callback, 0)
                             if str(data / 'logs') in '\n'.join(texts):
                                 dialogs.append(window)

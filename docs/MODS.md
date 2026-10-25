@@ -1,17 +1,7 @@
 # Mods
 
-The launcher reads the Krypt catalog when it opens.
-New catalog entries appear in **Mods**. New compatible language packs also appear in the language selector.
-An update notice appears when an installed mod has a newer compatible release.
-Select **Update** to install it. Updates preserve the enabled state.
-Choosing a local `.tar.xz` checks and installs the package directly.
-Downloads and updates also install without another confirmation.
-
-The installer checks downloads, files and patch results with SHA-256.
-It prepares the complete installation before replacing the previous version.
-Failed downloads, patches, conflicts or cancellations preserve that version.
-The progress bar advances across the operation's stages. It reaches 100% after the operation succeeds.
-Enabled mods apply when the game starts.
+This guide is for mod authors. Players install, update and enable mods in the launcher's **Mods** page.
+Downloads, files and patch results are checked with SHA-256, and a failed installation keeps the previous version.
 
 ## Compatibility
 
@@ -31,7 +21,7 @@ Unknown future mod features remain unavailable until the runtime supports them.
 
 ## Prepare a package
 
-Use the [Krypt builder](https://github.com/OAleex/ShaolinMonksRecompKrypt).
+Use the [OpenShao-Mods builder](https://github.com/OAleex/OpenShao-Mods).
 Add the mod to its `mods.json` before building.
 The builder creates `mod.json` inside the package. Older packages with `manifest.json` remain supported.
 Keep the mod ID and installation directory unchanged across updates.
@@ -109,7 +99,8 @@ Host compatibility overrides and functions without translated entries are unavai
 Hooks cover direct and indirect calls through translated function entry points.
 They do not intercept arbitrary instructions or internal jumps within a function.
 
-Callbacks receive `eax`, `ecx`, `edx`, `ebx`, `esp`, `ebp`, `esi`, `edi` and the flags `cf`, `zf`, `sf`, `of`, `pf`, `df`.
+Callbacks receive the registers `eax`, `ecx`, `edx`, `ebx`, `esp`, `ebp`, `esi` and `edi`.
+They also receive the flags `cf`, `zf`, `sf`, `of`, `pf` and `df`.
 Register values are unsigned 32-bit integers. Flags contain zero or one.
 A replacement can declare `stack_pop`, in bytes, for callee-cleaned arguments.
 The runtime also removes the four-byte return address after a successful replacement.
@@ -142,10 +133,10 @@ DLL, shared-library and raw Xbox executable mods are unsupported.
 
 ## Publish and update
 
-1. Build the package with the Krypt builder.
-2. Test the generated `.tar.xz` through **Install from file...**.
-3. Attach it to a public Krypt release using the printed tag.
-4. Publish the updated `mods.json` on the repository's default branch.
+1. Build the package with the OpenShao-Mods builder.
+2. Test the generated `.tar.xz` through **Install from file**.
+3. Attach it to a public OpenShao-Mods release using the printed tag.
+4. Publish the updated `mods.json` on `master`, which is the branch read by the launcher.
 
 Publish the asset before the catalog that points to it.
 Repeat this process with a higher version to offer an update.

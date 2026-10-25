@@ -56,7 +56,7 @@ void InterpolatedAlpha(const uint8_t* p, Rgba out[16]) {
     for (int i = 0; i < 16; i++) out[i].a = a[(bits >> (3 * i)) & 7];
 }
 
-}  // namespace
+}
 
 void Decode(int bc, const uint8_t* blocks, uint32_t block_pitch, uint32_t width, uint32_t height, uint32_t slices,
             std::vector<uint8_t>& out, uint32_t& out_pitch) {
@@ -89,4 +89,4 @@ void Decode(int bc, const uint8_t* blocks, uint32_t block_pitch, uint32_t width,
     }
 }
 
-}  // namespace vkbc
+}

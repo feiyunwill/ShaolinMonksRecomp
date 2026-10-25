@@ -3,10 +3,11 @@
 #include "version.h"
 #include "../file_ops.h"
 #include <algorithm>
+#include <cctype>
 #include <charconv>
 #include <set>
 #include <stdexcept>
-namespace shaolin::mods {
+namespace openshao::mods {
 namespace {
 std::string Text(const Json& j, const char* key, bool optional=false) { return optional&&!j.Has(key)?"":j.At(key).Text(); }
 uint64_t Number(const Json& j,const char* key) { auto n=j.At(key).Number(); if(n<0) throw std::runtime_error("Negative mod size or offset"); return uint64_t(n); }
@@ -18,6 +19,18 @@ void Id(const std::string& id) {
     if(id.empty()||id.size()>80||id.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-")!=id.npos)
         throw std::runtime_error("Invalid mod id");
 }
+// A release asset of one of the maintainer's repositories. The catalog repository is matched by owner, not name,
+// so catalogs written before a repository rename keep working through GitHub's redirect.
+bool OfficialRelease(std::string_view url) {
+    constexpr std::string_view owner = "https://github.com/OAleex/";
+    if (!url.starts_with(owner)) return false;
+    const auto rest = url.substr(owner.size());
+    const auto slash = rest.find('/');
+    if (slash == 0 || slash == std::string_view::npos) return false;
+    for (const char ch : rest.substr(0, slash))
+        if (!std::isalnum(static_cast<unsigned char>(ch)) && ch != '-' && ch != '_' && ch != '.') return false;
+    return rest.substr(slash).starts_with("/releases/download/");
+}
 bool KnownType(std::string_view type) {
     return type=="language"||type=="texture"||type=="gameplay"||type=="data"||type=="mixed";
 }
@@ -28,7 +41,7 @@ Mod ReadMod(const Json& j) {
     Path(m.install_dir);
     if(m.install_dir!="packages/"+m.id && !(m.type=="language" && m.install_dir=="languages/"+m.id))
         throw std::runtime_error("Install each mod in packages/<id>, or each language pack in languages/<id>");
-    if(!KnownType(m.type))m.unsupported_reason="Update Shaolin Monks Recomp to use this mod type";
+    if(!KnownType(m.type))m.unsupported_reason="Update OpenShao to use this mod type";
     if(m.type=="language" ? !ValidLanguageCode(m.language) : !m.language.empty())
         throw std::runtime_error("Only language mods can declare a valid language code");
     m.language_name=Text(j,"language_name",true);
@@ -49,7 +62,7 @@ Mod ReadMod(const Json& j) {
     if(j.Has("features"))for(const auto& feature:j.At("features").Items()) {
         const auto& name=feature.Text();m.features.push_back(name);
         if(name!="files"&&name!="gamedata"&&name!="voices"&&name!="fonts"&&name!="movies"&&name!="lua")
-            m.unsupported_reason="Update Shaolin Monks Recomp to use this mod feature: "+name;
+            m.unsupported_reason="Update OpenShao to use this mod feature: "+name;
     }
     return m;
 }
@@ -91,14 +104,15 @@ int CompareVersions(std::string_view a,std::string_view b) {
 std::vector<Mod> ParseCatalog(std::string_view json) {
     const auto j=Json::Parse(json);
     const auto schema=j.At("schema").Number();
-    if((schema!=1&&schema!=2)||Text(j.At("game"),"xbe_sha256")!=GameSha256) throw std::runtime_error("Unsupported Krypt catalog or game version");
+    if((schema!=1&&schema!=2)||Text(j.At("game"),"xbe_sha256")!=GameSha256) throw std::runtime_error("Unsupported mods catalog or game version");
     std::vector<Mod> mods; std::set<std::string> ids;
     for(const auto& row:j.At("mods").Items()) {
         auto m=ReadMod(row); if(!ids.insert(m.id).second) throw std::runtime_error("Duplicate mod id");
         for(const auto& v:row.At("versions").Items()) {
             Release r{Text(v,"version"),Text(v,"recomp"),Text(v,"url"),Text(v,"sha256"),Number(v,"size")};
             CompareVersions(r.version,r.version); CompareVersions(r.recomp,r.recomp); Hash(r.sha256);
-            if(!r.url.starts_with("https://github.com/OAleex/ShaolinMonksRecompKrypt/releases/download/")||!r.size||r.size>2ull*1024*1024*1024) throw std::runtime_error("Invalid Krypt release URL or size");
+            const bool official=OfficialRelease(r.url);
+            if(!official||!r.size||r.size>2ull*1024*1024*1024) throw std::runtime_error("Invalid mod release URL or size");
             m.versions.push_back(r);
         }
         std::sort(m.versions.begin(),m.versions.end(),[](auto& a,auto& b){return CompareVersions(a.version,b.version)>0;}); mods.push_back(std::move(m));
@@ -110,7 +124,7 @@ Manifest ParseManifest(std::string_view json) {
     if((schema!=1&&schema!=2)||Text(j.At("game"),"xbe_sha256")!=GameSha256) throw std::runtime_error("This mod requires a different game version");
     if(!m.unsupported_reason.empty())throw std::runtime_error(m.unsupported_reason);
     m.version=Text(j,"version"); m.recomp=Text(j,"recomp"); m.raw=json;
-    CompareVersions(m.version,m.version); if(CompareVersions(m.recomp,RecompVersion)>0) throw std::runtime_error("Update Shaolin Monks Recomp before installing this mod");
+    CompareVersions(m.version,m.version); if(CompareVersions(m.recomp,RecompVersion)>0) throw std::runtime_error("Update OpenShao before installing this mod");
     std::set<std::string> paths;
     auto unique=[&](const std::string& p) { Path(p); std::string key=p; for(auto& c:key) if(c>='A'&&c<='Z') c+=32;
         if(key=="mod.json"||key=="manifest.json"||key.ends_with(".xdelta")||!paths.insert(key).second) throw std::runtime_error("Reserved or duplicate payload path"); };

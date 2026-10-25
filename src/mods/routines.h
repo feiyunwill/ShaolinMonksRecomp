@@ -6,7 +6,7 @@
 #include <span>
 #include <string>
 #include <vector>
-namespace shaolin::mods {
+namespace openshao::mods {
 struct RoutineScript {std::string mod_id;std::filesystem::path file;};
 using MemoryCheck=std::function<bool(uint32_t address,uint32_t size)>;
 using RoutineLog=std::function<void(std::string_view)>;

@@ -28,10 +28,10 @@ class ReleasePackageTest(unittest.TestCase):
             (root / 'licenses/SDK-MIT.txt').write_text('Required license.')
             (root / 'docs/CONTROLLERS.md').write_text('Controller instructions.')
             (root / 'docs/images').mkdir()
-            cover = root / 'docs/images/shaolin-monks-recomp.png'
+            cover = root / 'docs/images/openshao.png'
             cover.write_bytes(b'project-logo-fixture')
             (root / 'docs/images/private.png').write_bytes(b'must not be distributed')
-            exe = root / 'build/ShaolinMonksRecomp.exe'
+            exe = root / 'build/OpenShao.exe'
             exe.parent.mkdir()
             exe.write_bytes(b'MZ-test-only-executable')
             for name in ('default.xbe', 'game.xiso.iso', 'private.log', 'save.dat', 'settings.toml'):
@@ -40,9 +40,9 @@ class ReleasePackageTest(unittest.TestCase):
             package = module.portable_package(root, exe, output, '0.1.0')
             with zipfile.ZipFile(package) as archive:
                 names = set(archive.namelist())
-                self.assertEqual(names, {'ShaolinMonksRecomp.exe', 'readme.txt',
+                self.assertEqual(names, {'OpenShao.exe', 'readme.txt',
                                          'licenses/LICENSE.txt', 'licenses/SDK-MIT.txt'})
-                self.assertEqual(archive.read('ShaolinMonksRecomp.exe'), exe.read_bytes())
+                self.assertEqual(archive.read('OpenShao.exe'), exe.read_bytes())
                 self.assertEqual(archive.read('readme.txt'), (root / 'resources/readme.txt').read_bytes())
                 self.assertEqual(archive.read('licenses/LICENSE.txt'), (root / 'LICENSE').read_bytes())
             self.assertTrue((output / 'checksums.txt').is_file())
@@ -51,7 +51,7 @@ class ReleasePackageTest(unittest.TestCase):
         script = Path(__file__).resolve().parents[1] / 'tools/package_release.py'
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
-            exe = root / 'ShaolinMonksRecomp.exe'
+            exe = root / 'OpenShao.exe'
             exe.write_bytes(b'MZ-test-only-executable')
             output = root / 'dist'
             command = [sys.executable, str(script), '--exe', str(exe),
@@ -59,13 +59,13 @@ class ReleasePackageTest(unittest.TestCase):
             for _ in range(2):
                 subprocess.run(command, check=True, capture_output=True)
                 self.assertEqual({path.name for path in output.iterdir()},
-                                 {'ShaolinMonksRecomp-0.1.0-Windows-x64.zip', 'checksums.txt'})
-                package = output / 'ShaolinMonksRecomp-0.1.0-Windows-x64.zip'
+                                 {'OpenShao-0.1.0-Windows-x64.zip', 'checksums.txt'})
+                package = output / 'OpenShao-0.1.0-Windows-x64.zip'
                 digest = hashlib.sha256(package.read_bytes()).hexdigest()
                 self.assertEqual((output / 'checksums.txt').read_text(),
                                  f'{digest}  {package.name}\n')
 
-    def test_linux_package_has_one_folder_and_an_executable(self):
+    def test_linux_package_extracts_runtime_files_inside_one_folder(self):
         script = Path(__file__).resolve().parents[1] / 'tools/package_release.py'
         spec = importlib.util.spec_from_file_location('package_release', script)
         module = importlib.util.module_from_spec(spec)
@@ -78,7 +78,7 @@ class ReleasePackageTest(unittest.TestCase):
             (root / 'resources').mkdir()
             (root / 'resources/readme.txt').write_text('Player setup instructions.')
             (root / 'licenses/SDK-MIT.txt').write_text('Required license.')
-            exe = root / 'build/ShaolinMonksRecomp'
+            exe = root / 'build/OpenShao'
             exe.parent.mkdir()
             exe.write_bytes(b'\x7fELF-test-only-executable')
             for name in ('default.xbe', 'private.log', 'settings.toml'):
@@ -86,15 +86,17 @@ class ReleasePackageTest(unittest.TestCase):
             self.assertEqual(module.platform_of(exe), 'linux')
             output = root / 'dist'
             package = module.linux_package(root, exe, output, '0.1.0')
-            self.assertEqual(package.name, 'ShaolinMonksRecomp-0.1.0-Linux-x64.tar.gz')
+            self.assertEqual(package.name, 'OpenShao-0.1.0-Linux-x64.tar.gz')
             with tarfile.open(package) as archive:
                 members = {member.name: member for member in archive.getmembers()}
-                self.assertEqual(set(members), {'ShaolinMonksRecomp/ShaolinMonksRecomp',
-                                                'ShaolinMonksRecomp/readme.txt',
-                                                'ShaolinMonksRecomp/licenses/LICENSE.txt',
-                                                'ShaolinMonksRecomp/licenses/SDK-MIT.txt'})
-                self.assertEqual(members['ShaolinMonksRecomp/ShaolinMonksRecomp'].mode, 0o755)
-                self.assertEqual(archive.extractfile('ShaolinMonksRecomp/ShaolinMonksRecomp').read(), exe.read_bytes())
+                self.assertEqual(set(members), {'OpenShao/OpenShao', 'OpenShao/readme.txt',
+                                                'OpenShao/licenses/LICENSE.txt', 'OpenShao/licenses/SDK-MIT.txt'})
+                self.assertEqual(members['OpenShao/OpenShao'].mode, 0o755)
+                self.assertEqual(archive.extractfile('OpenShao/OpenShao').read(), exe.read_bytes())
+                self.assertEqual(archive.extractfile('OpenShao/readme.txt').read(),
+                                 (root / 'resources/readme.txt').read_bytes())
+                self.assertEqual(archive.extractfile('OpenShao/licenses/LICENSE.txt').read(),
+                                 (root / 'LICENSE').read_bytes())
             digest = hashlib.sha256(package.read_bytes()).hexdigest()
             self.assertEqual((output / 'checksums.txt').read_text(), f'{digest}  {package.name}\n')
 
@@ -103,14 +105,14 @@ class ReleasePackageTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             output = root / 'dist'
-            for name, content in (('ShaolinMonksRecomp.exe', b'MZ-test'), ('ShaolinMonksRecomp', b'\x7fELF-test')):
+            for name, content in (('OpenShao.exe', b'MZ-test'), ('OpenShao', b'\x7fELF-test')):
                 exe = root / name
                 exe.write_bytes(content)
                 subprocess.run([sys.executable, str(script), '--exe', str(exe), '--output', str(output),
                                 '--version', '0.1.0'], check=True, capture_output=True)
             self.assertEqual({path.name for path in output.iterdir()},
-                             {'ShaolinMonksRecomp-0.1.0-Windows-x64.zip',
-                              'ShaolinMonksRecomp-0.1.0-Linux-x64.tar.gz', 'checksums.txt'})
+                             {'OpenShao-0.1.0-Windows-x64.zip',
+                              'OpenShao-0.1.0-Linux-x64.tar.gz', 'checksums.txt'})
             self.assertEqual(len((output / 'checksums.txt').read_text().splitlines()), 2)
 
 

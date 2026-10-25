@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-namespace shaolin::setup {
+namespace openshao::setup {
 struct Source {
     std::filesystem::path path;
     bool folder = false;

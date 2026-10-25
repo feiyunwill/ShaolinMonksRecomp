@@ -8,7 +8,7 @@ static void Check(bool value, const char* message) {
     if (!value) { std::cerr << message << '\n'; std::exit(1); }
 }
 int main() {
-    using namespace shaolin::mouse;
+    using namespace openshao::mouse;
     State mouse;
     mouse.Move(12, -8, 1.0);
     const auto initial = mouse.Sample(1.0);
@@ -43,5 +43,13 @@ int main() {
     buttons = mouse.Sample(6.0);
     Check(buttons.analog[7] == 255 && !buttons.analog[2] && !buttons.analog[1], "Remapping and unassigned mouse buttons must work");
     mouse.Move(INT32_MAX, INT32_MIN, 7.0); buttons = mouse.Sample(7.0);
-    Check(buttons.rx == 32767 && buttons.ry == 32767, "Extreme motion must saturate without overflow");
+    Check(buttons.rx == 32767 && buttons.ry == 32767, "Extreme motion must saturate without overflow");    settings={};settings.bindings[5]="dpad_up";settings.bindings[6]="a";settings.motion="left_stick";settings.invert_x=true;
+    mouse.Configure(settings);mouse.Move(8,0,8.0);mouse.Wheel(1,8.0);buttons=mouse.Sample(8.0);
+    Check(buttons.lx<0 && !buttons.rx && (buttons.buttons&1),"mouse motion can target the left stick with inversion and wheel bindings");
+    buttons=mouse.Sample(8.2);Check(!(buttons.buttons&1),"wheel actions release automatically instead of leaving a button held");
+    mouse.Wheel(-1,8.3);buttons=mouse.Sample(8.3);Check(buttons.analog[0]==255,"wheel down can activate an independent action");
+    mouse.Clear();buttons=mouse.Sample(8.31);Check(!buttons.analog[0],"focus or capture loss clears pending wheel input");
+    settings.motion="none";settings.bindings[0]="camera_left";mouse.Configure(settings);mouse.Move(20,20,9.0);mouse.Button(0,true);buttons=mouse.Sample(9.0);
+    Check(!buttons.lx && buttons.rx==-32768 && !buttons.ry,"mouse buttons can map to stick directions while mouse motion is disabled");
+
 }

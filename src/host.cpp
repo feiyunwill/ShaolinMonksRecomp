@@ -8,6 +8,7 @@
 #include <unistd.h>
 #include <vector>
 #include "linux/linux_platform.h"
+#include <SDL3/SDL.h>
 #endif
 
 #include <cstdio>
@@ -22,9 +23,40 @@
 #include "app/app.h"
 #include "performance_overlay.h"
 #include "runtime_paths.h"
+#include "restart.h"
+#include "launcher_settings.h"
+#include <cerrno>
+#include <limits>
+#include <algorithm>
 
-namespace shaolin {
+namespace openshao {
 Options options;
+
+bool RequestExit() {
+#ifdef _WIN32
+    return PostMessageW(static_cast<HWND>(app::Window()),WM_CLOSE,0,0)!=FALSE;
+#else
+    SDL_Event event{};event.type=SDL_EVENT_QUIT;return SDL_PushEvent(&event);
+#endif
+}
+
+// Another copy holds the data folder. Bring its window forward, or say that it is open; nothing here is an error.
+void ShowAlreadyOpen() {
+    std::fprintf(stderr, "OpenShao is already open.\n");
+    if (options.background || !options.launcher_test.empty()) return;
+#ifdef _WIN32
+    for (const wchar_t* kind : {L"OpenShaoLauncher", app::kGame.name}) {
+        if (HWND window = FindWindowW(kind, nullptr)) {
+            if (IsIconic(window)) ShowWindow(window, SW_RESTORE);
+            SetForegroundWindow(window);
+            return;
+        }
+    }
+    MessageBoxW(nullptr, L"OpenShao is already open. Close it before starting another copy.", L"OpenShao", MB_OK | MB_ICONINFORMATION);
+#else
+    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "OpenShao", "OpenShao is already open. Close it before starting another copy.", nullptr);
+#endif
+}
 
 int Configure() {
 #ifdef _WIN32
@@ -39,6 +71,12 @@ int Configure() {
     wchar_t** argv = pointers.data();
 #endif
     bool invalid = false, explicit_timeout = false;
+    auto number=[&](const wchar_t* value,uint64_t maximum) {
+        wchar_t* end=nullptr;errno=0;
+        const auto result=std::wcstoull(value,&end,10);
+        if(!*value || *value==L'-' || *value==L'+' || *end || errno || result==0 || result>maximum)invalid=true;
+        return result;
+    };
     for (int i = 1; i < argc && !invalid; ++i) {
         const std::wstring arg = argv[i];
         if (arg == L"--background") options.background = true;
@@ -46,6 +84,15 @@ int Configure() {
         else if (arg == L"--host-test") options.host_test = true;
         else if (arg == L"--setup") options.setup = true;
         else if (arg == L"--no-launcher") options.no_launcher = true;
+        else if (arg == L"--resume-main-menu") {options.resume_main_menu=true;options.no_launcher=true;}
+        else if (arg == L"--restart-parent" && i+1<argc) options.restart_parent=uint32_t(number(argv[++i],UINT32_MAX));
+        else if (arg == L"--restart-ready-handle" && i+1<argc) options.restart_ready=uintptr_t(number(argv[++i],std::numeric_limits<uintptr_t>::max()));
+        else if (arg == L"--restart-language" && i+1<argc) {
+            const std::wstring value=argv[++i];options.restart_language.assign(value.begin(),value.end());
+        }
+        else if(arg==L"--restart-voice-language" && i+1<argc) {
+            const std::wstring value=argv[++i];options.restart_voice_language.assign(value.begin(),value.end());
+        }
         else if (arg == L"--configure") options.configure_only = true;
         else if (arg == L"--validate-language-pack") options.validate_language_pack = true;
         else if (arg == L"--language-pack" && i + 1 < argc) options.language_pack = argv[++i];
@@ -66,6 +113,7 @@ int Configure() {
             if (count.size()!=1 || count[0]<L'1' || count[0]>L'3') invalid=true;
             else options.virtual_gamepads=unsigned(count[0]-L'0');
         }
+        else if (arg == L"--launcher-test" && i + 1 < argc) options.launcher_test = argv[++i];
         else if (arg == L"--game" && i + 1 < argc) options.game = argv[++i];
         else if (arg == L"--disc" && i + 1 < argc) options.disc = argv[++i];
         else if (arg == L"--timeout" && i + 1 < argc) {
@@ -86,8 +134,17 @@ int Configure() {
     if (options.setup && (options.background || options.host_test || options.validate_disc || options.validate_language_pack)) invalid = true;
     if (options.configure_only && (options.background || options.setup || options.no_launcher || options.validate_disc || options.validate_language_pack)) invalid = true;
     if (!options.disc.empty() && !options.game.empty()) invalid = true;
+    if (!options.launcher_test.empty() && (options.background || options.no_launcher || options.setup || options.validate_disc ||
+                                           options.validate_language_pack || options.data_dir.empty())) invalid = true;
+    if(options.restart_parent || options.restart_ready || !options.restart_language.empty() || !options.restart_voice_language.empty()) {
+        if(std::find(launcher::voice_languages.begin(),launcher::voice_languages.end(),options.restart_voice_language)==launcher::voice_languages.end() ||
+           !options.restart_parent || !options.restart_ready || !options.resume_main_menu ||
+           std::find(launcher::languages.begin(),launcher::languages.end(),options.restart_language)==launcher::languages.end() || options.data_dir.empty() || options.save_dir.empty() ||
+           options.configure_only || options.setup || options.info || options.paths || options.host_test ||
+           options.validate_disc || options.validate_language_pack)invalid=true;
+    }
     if (invalid) {
-        std::fprintf(stderr, "Usage: ShaolinMonksRecomp [--configure | --no-launcher | --setup] [--disc game.iso | --game folder] [--register-disc game.iso | --validate-disc game.iso] [--validate-language-pack] [--language-pack folder] [--paths] [--data-dir folder] [--save-dir folder | --portable-saves]\n");
+        std::fprintf(stderr, "Usage: OpenShao [--configure | --no-launcher | --setup] [--disc game.iso | --game folder] [--register-disc game.iso | --validate-disc game.iso] [--validate-language-pack] [--language-pack folder] [--paths] [--data-dir folder] [--save-dir folder | --portable-saves]\n");
         return 2;
     }
 #ifdef _WIN32
@@ -102,7 +159,8 @@ int Configure() {
         return 1;
     }
     std::string error;
-    if (!paths::Initialize(app::ExeDir(), options.background, options.data_dir, error, options.paths)) {
+    if (!paths::Initialize(app::ExeDir(), options.background, options.data_dir, error, options.paths || options.restart_parent!=0)) {
+        if (paths::DataInUse()) { ShowAlreadyOpen(); return kAlreadyOpen; }
         std::fprintf(stderr, "Cannot prepare application data: %s\n", error.c_str());
         paths::ReportError(L"The application data folder could not be opened. Check its permissions.");
         return 6;
@@ -132,6 +190,7 @@ bool OpenSaveDirectory(const std::wstring& name, std::filesystem::path& result, 
 #else
             LOGR("Save directory: %s%s", result.string().c_str(), migrate ? " (configured save location)" : " (explicit/portable/isolated)");
 #endif
+            restart::SaveDirectory(result);
             return true;
         }
     } catch (const std::exception& e) { error = e.what(); }
@@ -148,7 +207,7 @@ void StartWatchdog() {
 #else
         std::this_thread::sleep_for(std::chrono::seconds(seconds));
 #endif
-        LOGR("Shaolin diagnostic timeout (%u seconds)", seconds);
+        LOGR("OpenShao diagnostic timeout (%u seconds)", seconds);
         logx::Flush();
 #ifdef _WIN32
         TerminateProcess(GetCurrentProcess(), 7);
@@ -174,8 +233,7 @@ int CheckHiddenWindow(void* raw, bool display_changed) {
     const auto other = input::Poll(1);
     bool isolated = pad.connected && !pad.buttons && !pad.lx && !pad.ly && !pad.rx && !pad.ry && !other.connected;
     for (auto analog : pad.analog) isolated = isolated && !analog;
-    // Exercise the actual WndProc -> GameInfo callback -> SDK Poll path.
-    // Only send messages to this process's verified hidden diagnostic window.
+    // Exercise WndProc and SDK Poll only through this process's verified hidden window.
     bool keyboard = owned && !visible && options.background;
     if (keyboard) {
         SendMessageW(window, WM_KEYDOWN, VK_RETURN, 0);

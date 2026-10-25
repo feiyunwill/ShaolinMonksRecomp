@@ -1,6 +1,5 @@
 #pragma once
-// The Windows virtual-key codes the keyboard mapping uses. Linux translates
-// SDL scancodes to these so the shared mapping stays identical.
+// Translate SDL scancodes to the shared Windows virtual-key mapping.
 enum : unsigned {
     VK_BACK = 0x08, VK_RETURN = 0x0D, VK_SHIFT = 0x10, VK_CONTROL = 0x11, VK_ESCAPE = 0x1B, VK_SPACE = 0x20,
     VK_LEFT = 0x25, VK_UP = 0x26, VK_RIGHT = 0x27, VK_DOWN = 0x28,

@@ -1,16 +1,21 @@
-# Shaolin Monks Recomp Agent Guide
+# OpenShao Agent Guide
 
 This file defines instructions for coding agents in this repository.
 Read `README.md` for user features and `docs/BUILDING.md` for build instructions.
 
 ## Project scope
 
-- Use **Shaolin Monks Recomp** as the project name.
-- Use `ShaolinMonksRecomp` as the executable base name. Add `.exe` when the file format requires it.
+- Use **OpenShao** as the project name.
+- Use `OpenShao` as the executable base name. Add `.exe` when the file format requires it.
 - The target is the supported USA/Europe Xbox release of **Mortal Kombat: Shaolin Monks**.
 - The project uses XboxXBERecomp, C++20, SDL and Dear ImGui.
-- The Direct3D 12 target uses XAudio2 and a Win32 launcher.
-- The Vulkan target uses SDL platform services and an ImGui launcher.
+- Both targets share one Dear ImGui launcher in `src/launcher.cpp`, drawn with `src/launcher_art.cpp`.
+- The Direct3D 12 target uses XAudio2 and shows the launcher in a Win32 window rendered with Direct3D 12.
+- The Vulkan target uses SDL platform services and shows the launcher in an SDL window rendered with Vulkan.
+- Keep the launcher's own visual identity. Do not use the game's logos, artwork, characters, typefaces or trade dress in the launcher, icon or documentation image.
+- Without a usable game, the launcher opens on its game page. `--setup` and runs without a launcher window use the system dialogs.
+- Updates come from the project's GitHub releases. Verify each package with its SHA-256 before installing it.
+- Keep the migration of default folders from releases before 0.3.0. It recognizes them by their contents. Do not add the project's previous names to code or documentation.
 - Select platform code at compile time. Preserve each target's behavior when changing another target.
 - Keep the SDL platform services and Vulkan renderer in `src/linux/`.
 - Keep code, identifiers, comments, messages, scripts, tests, and documentation in English.
@@ -22,7 +27,7 @@ Read `README.md` for user features and `docs/BUILDING.md` for build instructions
 - Preserve intentional localization and character-encoding tests.
 - Write comments that explain constraints or non-obvious behavior. Avoid comments that repeat the code.
 - Document implemented features. Do not describe full campaign compatibility as verified without gameplay evidence.
-- The maintainer reports a completed campaign playthrough. Some graphical issues remain.
+- The maintainer reports a completed campaign playthrough. Most graphical issues are fixed; some can still appear.
 - Mention tools and dependencies in project documentation. Avoid comparisons or credits to other game recompilation projects.
 
 ## Git and collaboration
@@ -60,13 +65,13 @@ Read `README.md` for user features and `docs/BUILDING.md` for build instructions
 
 - Users supply their own original game files. Do not change those files during import or testing.
 - Keep original disc images, XBE files and extracted game assets outside public source and all release packages.
-- Keep generated translations outside public source and base release packages. Build mod archives through the Krypt release tool.
+- Keep generated translations outside public source and base release packages. Build mod archives through the OpenShao-Mods release tool.
 - Keep saves, settings, logs, captures, crash dumps, analysis databases, and local toolchains outside public source.
-- The approved documentation image is `docs/images/shaolin-monks-recomp.png`. Preserve it unless the owner requests a replacement.
+- The approved documentation image is `docs/images/openshao.png`. Preserve it unless the owner requests a replacement.
 - Preserve the project's GPL-2.0-or-later terms and all required third-party notices.
 - The project license does not license the original game's code, assets, names, or artwork.
 - Use `paths::Root()` for application data and `paths::SaveRoot()` for the configured saves folder.
-- Preserve the system defaults listed in [Troubleshooting](docs/TROUBLESHOOTING.md#folders).
+- Preserve the system defaults listed in the [README](README.md#where-are-my-saves-settings-and-logs).
 - Keep `paths.toml` in the default data folder, even after the data folder moves.
 - Keep installed mods under `paths::Mods()` (`paths::Root()/mods`), with enabled state in `installed.toml`.
 - Apply pending folder moves in `paths::Initialize` before logs open.
@@ -90,7 +95,7 @@ Read `README.md` for user features and `docs/BUILDING.md` for build instructions
 - Mouse input shares the keyboard's player slot. F10 and focus loss release pointer capture.
 - Capture the pointer only while the interactive game window has focus. Keep it inside the selected monitor.
 - Preserve visible title-bar controls in windowed mode.
-- Show source selection before settings when the remembered game is unavailable. Preserve settings-only `--configure` behavior.
+- Show game selection before the tabs when the remembered game is unavailable. Preserve settings-only `--configure` behavior.
 - Keep ISO and XISO reading in the runtime. Do not add extract-xiso or a separate installer dependency.
 - Preserve original timing, camera restrictions, save behavior, and visual intent when changing host integration.
 - A higher host FPS limit alone does not prove accurate gameplay timing at that rate.
@@ -113,7 +118,7 @@ Successful builds create a release package and `checksums.txt` automatically.
 Configuration-only runs skip packaging.
 GitHub supplies source archives for release tags.
 Each package contains the executable, `readme.txt` and `licenses/`, including the project license text.
-The `.tar.gz` puts those files in one `ShaolinMonksRecomp` folder.
+The `.tar.gz` puts those files in one `OpenShao` folder.
 Keep `README.md`, `UPSTREAM.md`, `AGENTS.md`, and `docs/` in the source repository, outside the packages.
 Maintain the packaged player instructions in `resources/readme.txt`. Preserve the explicit package file list.
 Do not publish packages as part of local validation.

@@ -7,13 +7,14 @@
 #include <chrono>
 #include <mutex>
 #include "mouse.h"
+#include "keyboard.h"
 #include "window.h"
 #include "controller.h"
 #include "host.h"
 #include "core/input.h"
 #include "core/log.h"
 
-namespace shaolin::mouse {
+namespace openshao::mouse {
 namespace {
 std::mutex lock;
 State state;
@@ -46,7 +47,7 @@ void Release() {
 }
 bool Capture() {
     RECT bounds{};
-    if (!Available() || !shaolin::window::ClientBounds(window, bounds) || !ClipCursor(&bounds)) return false;
+    if (!Available() || !openshao::window::ClientBounds(window, bounds) || !ClipCursor(&bounds)) return false;
     confinement = bounds;
     { std::lock_guard guard(lock); state.Clear(); }
     captured = true; released = false; SetCursor(nullptr);
@@ -101,11 +102,11 @@ bool Message(void* handle, uint32_t message, uintptr_t key, intptr_t value, intp
     }
     if ((message == WM_KEYUP || message == WM_SYSKEYUP) && key == VK_F10) { *result = 0; return true; }
     if (message == WM_KEYDOWN && !released && !Captured() &&
-        ((key >= 'A' && key <= 'Z') || key == VK_SPACE || key == VK_RETURN || (key >= VK_LEFT && key <= VK_DOWN))) Capture();
+        openshao::keyboard::Mapped(unsigned(key))) Capture();
     if (message == WM_TIMER && key == timer) {
         if (Captured()) {
             RECT bounds{};
-            if (!Available() || !shaolin::window::ClientBounds(window, bounds)) Release();
+            if (!Available() || !openshao::window::ClientBounds(window, bounds)) Release();
             else if (!EqualRect(&bounds, &confinement)) {
                 if (ClipCursor(&bounds)) confinement = bounds;
                 else Release();
@@ -124,6 +125,9 @@ bool Message(void* handle, uint32_t message, uintptr_t key, intptr_t value, intp
         }
         return false; // DefWindowProc must perform WM_INPUT cleanup.
     }
+    if(message==WM_MOUSEWHEEL && Captured()) {
+        std::lock_guard guard(lock);state.Wheel(GET_WHEEL_DELTA_WPARAM(key),Now());*result=0;return true;
+    }
     const auto button = ButtonIndex(message, key);
     if (button >= 0) {
         const bool down = message == WM_LBUTTONDOWN || message == WM_RBUTTONDOWN || message == WM_MBUTTONDOWN || message == WM_XBUTTONDOWN;
@@ -140,6 +144,8 @@ void Poll(input::Pad& pad) {
     if (!Captured()) return;
     std::lock_guard guard(lock);
     const auto mouse = state.Sample(Now());
+    if (std::abs(int(mouse.lx)) > std::abs(int(pad.lx))) pad.lx = mouse.lx;
+    if (std::abs(int(mouse.ly)) > std::abs(int(pad.ly))) pad.ly = mouse.ly;
     if (std::abs(int(mouse.rx)) > std::abs(int(pad.rx))) pad.rx = mouse.rx;
     if (std::abs(int(mouse.ry)) > std::abs(int(pad.ry))) pad.ry = mouse.ry;
     for (unsigned i = 0; i < 8; ++i) pad.analog[i] = std::max(pad.analog[i], mouse.analog[i]);

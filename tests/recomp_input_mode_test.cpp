@@ -5,22 +5,27 @@
 #include <cstring>
 #include <vector>
 struct X86Context {uint32_t esp=0x1100,eax=0,ecx=0;};
-namespace shaolin::preferences { void Apply(X86Context&, uint8_t*) {} }
+namespace openshao::preferences { void Apply(X86Context&, uint8_t*) {} }
+namespace openshao::ed_nexus { void FrontendInput(X86Context&, uint8_t*) {} }
+namespace openshao::recomp {bool MainInput(X86Context&,uint8_t*){return false;}}
 std::array<uint8_t,4096> bytes{};
-uint32_t selected=0,top_menu=0x598430;
+uint32_t selected=0,top_menu=0x598430,rumble_mask=0;
 namespace kernel {
 uint32_t R32(uint32_t p) {
+    if(p==0x639674)return rumble_mask;
     if(p==0x598468)return selected;
     if(p==0x6C9308)return 1;
     if(p==0x6C930C)return top_menu;
     uint32_t v;std::memcpy(&v,bytes.data()+p-0x1000,4);return v;
 }
-void W32(uint32_t p,uint32_t v) {std::memcpy(bytes.data()+p-0x1000,&v,4);}
+void W32(uint32_t p,uint32_t v) {if(p==0x639674){rumble_mask=v;return;}std::memcpy(bytes.data()+p-0x1000,&v,4);}
 }
 std::vector<bool> modes;
 bool original_called=false;
 bool frontend_poll=false;
-namespace shaolin::controller {
+namespace openshao::controller {
+bool vibration=true;
+bool RumbleEnabled(){return vibration;}
 void SetMultiplayer(bool value) {if(!original_called && !frontend_poll)std::abort();modes.push_back(value);}
 }
 #define X86_FUNC(name) void name(X86Context& ctx,uint8_t* base)
@@ -61,6 +66,12 @@ int main() {
     Check(modes.size()==1 && !modes.back(),"single-player selector retains shared P1");
     modes.clear();selected=1;top_menu=0x123456;SyncRetailFrontendMode();
     Check(modes.empty(),"other menu stacks do not override routing");
+    rumble_mask=0x80;openshao::controller::vibration=true;SyncRetailFrontendMode();
+    Check(rumble_mask==0x8F,"Enabled host vibration must enable the original game's four player vibration gates while preserving unrelated flags");
+    openshao::controller::vibration=false;SyncRetailFrontendMode();
+    Check(rumble_mask==0x80,"Disabling host vibration must close the original game vibration gates");
+    openshao::controller::vibration=true;SyncRetailFrontendMode();
+    Check(rumble_mask==0x8F,"Vibration can be reenabled after an in-game setting change without restarting or reconnecting");
     frontend_poll=false;
     for (uint32_t mode:{0u,1u,2u,7u}) {
         modes.clear();original_called=false;X86Context ctx;

@@ -7,7 +7,7 @@
 #include <algorithm>
 #include <fstream>
 namespace fs=std::filesystem;
-namespace shaolin::mods {
+namespace openshao::mods {
 namespace {
 std::string Read(const fs::path& p){std::ifstream f(p,std::ios::binary);return {std::istreambuf_iterator<char>(f),{}};}
 struct TempFile {fs::path path;~TempFile(){std::error_code ec;fs::remove(path,ec);}};
@@ -38,7 +38,7 @@ void Browser::Reload(){
     for(const auto& m:state_.catalog)for(const auto& i:state_.installed)if(i.mod.id==m.id)if(const auto* v=LatestCompatible(m))if(CompareVersions(v->version,i.mod.version)>0)state_.updates=true;
 }
 void Browser::Refresh(){Start([this]{
-    Recover(root_);Reload();const auto cache=root_.parent_path()/"cache/krypt.json";fs::create_directories(cache.parent_path());
+    Recover(root_);Reload();const auto cache=root_.parent_path()/"cache/mods.json";fs::create_directories(cache.parent_path());
     if(fs::is_regular_file(cache))try{auto mods=ParseCatalog(Read(cache));std::lock_guard lock(mutex_);state_.catalog=std::move(mods);}catch(...){}
     TempFile download{files::UniqueSibling(cache,".download-")};
     const auto progress=ProgressCallback();
@@ -56,7 +56,7 @@ void Browser::InstallFile(const fs::path& file,const fs::path& game){Start([this
 void Browser::Install(std::string id,const fs::path& game){Start([this,id,game]{
     const auto view=View();const auto it=std::find_if(view.catalog.begin(),view.catalog.end(),[&](auto& m){return m.id==id;});
     if(it==view.catalog.end())throw std::runtime_error("Refresh the mod catalog before installing");const auto* version=LatestCompatible(*it);
-    if(!version)throw std::runtime_error("No release is available for this version of Shaolin Monks Recomp");
+    if(!version)throw std::runtime_error("No release is available for this version of OpenShao");
     const auto progress=ProgressCallback();GameReader source(game);
     const auto cache=root_.parent_path()/"cache";fs::create_directories(cache);
     TempFile archive{files::UniqueSibling(cache/"mod.tar.xz",".download-")};Download(version->url,archive.path,version->size,ProgressSlice(progress,0,3000));

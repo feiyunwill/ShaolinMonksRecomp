@@ -3,18 +3,19 @@
 #include "controller.h"
 #include "performance_overlay.h"
 #include "launcher.h"
+#include "brightness.h"
 
 const app::GameInfo app::kGame = {
-    .title = L"Shaolin Monks Recomp",
-    .short_title = L"Shaolin Monks Recomp",
-    .name = L"ShaolinMonksRecomp",
-    .log = "shaolin-recomp",
+    .title = L"OpenShao",
+    .short_title = L"OpenShao",
+    .name = L"OpenShao",
+    .log = "openshao",
     .settings = "settings.toml",
-    .splash = L"shaolin-recomp",
+    .splash = L"openshao",
     .missing = L"Select your Xbox game files.",
-    .images = {{"default.xbe", "ShaolinMonksRecomp"}},
+    .images = {{"default.xbe", "OpenShao"}},
     .options = {},
-    .load = shaolin::launcher::Load, .save = shaolin::launcher::Save, .init = nullptr, .loaded = nullptr,
-    .window = shaolin::controller::Window, .message = shaolin::controller::Message, .ui = shaolin::performance::Draw,
-    .pad = shaolin::keyboard::Poll, .rumble = nullptr,
+    .load = openshao::launcher::Load, .save = openshao::launcher::Save, .init = nullptr, .loaded = openshao::brightness::Initialize,
+    .window = openshao::controller::Window, .message = openshao::controller::Message, .ui = openshao::performance::Draw,
+    .pad = openshao::keyboard::Poll, .rumble = nullptr,
 };

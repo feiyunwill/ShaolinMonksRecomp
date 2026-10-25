@@ -1,0 +1,4 @@
+#pragma once
+namespace openshao::menu {
+inline constexpr char MenuTextData[]=R"menujson(@OPENSHAO_MENU_TEXT@)menujson";
+}

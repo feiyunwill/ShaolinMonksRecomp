@@ -18,10 +18,9 @@ X86_EXTERN_FUNC(__imp__sub_000EBD00);
 X86_EXTERN_FUNC(__imp__sub_00152960);
 X86_EXTERN_FUNC(__imp__sub_0015ABF0);
 
-// The audited credits renderer compares this prefix before choosing font style.
-// Other uses of '#' include controller tokens and must retain their original path.
+// Only the credits prefix selects a font style; other # tokens remain controller glyphs.
 X86_FUNC(sub_000EBD00) {
-    if (shaolin::language::CreditsEnabled() && Read(base, ctx.esp) == 0x4B3E6 &&
+    if (openshao::language::CreditsEnabled() && Read(base, ctx.esp) == 0x4B3E6 &&
         Read(base, ctx.esp + 8) == 0x49D4BC && Read(base, ctx.esp + 12) == 16) {
         const auto line = Read(base, ctx.esp + 4);
         if (line && base[line] == '#') {
@@ -35,7 +34,7 @@ X86_FUNC(sub_000EBD00) {
 
 X86_FUNC(sub_00152960) {
     const auto slot = ctx.esp + 20;
-    if (shaolin::language::CreditsEnabled() && Read(base, ctx.esp) == 0x4B419 &&
+    if (openshao::language::CreditsEnabled() && Read(base, ctx.esp) == 0x4B419 &&
         Read(base, ctx.esp + 16) == 2 && ctx.edi &&
         ctx.edi <= std::numeric_limits<uint32_t>::max() - 16 &&
         Read(base, slot) == ctx.edi + 16 && base[ctx.edi] == '#') {
@@ -50,9 +49,8 @@ X86_FUNC(sub_00152960) {
 }
 
 X86_FUNC(sub_0015ABF0) {
-    // This return address belongs only to campaign credits update (C5D10).
-    // Extras credits have a separate caller and require their manual exit.
-    const bool campaign = shaolin::language::CreditsEnabled() &&
+    // Only the campaign credits caller uses this return address; extras require manual exit.
+    const bool campaign = openshao::language::CreditsEnabled() &&
         Read(base, ctx.esp) == 0xC5D3D && ctx.ecx == 0x67C658 &&
         Read(base, ctx.esp + 4) == 4;
     __imp__sub_0015ABF0(ctx, base);

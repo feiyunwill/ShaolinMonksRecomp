@@ -4,10 +4,9 @@
 #include <cstdint>
 #include <mutex>
 
-namespace shaolin {
+namespace openshao {
 
-// The Xbox API waits until the NEXT vertical blank. A fixed 16ms sleep is
-// incorrect when the title reaches the call partway through a refresh.
+// Wait for the next vertical blank; a fixed 16 ms delay loses the current refresh phase.
 class VBlankClock {
 public:
     void Tick() {
@@ -29,4 +28,4 @@ private:
     uint64_t count_ = 0;
 };
 
-}  // namespace shaolin
+}

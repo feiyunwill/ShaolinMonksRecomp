@@ -11,7 +11,7 @@
 #include <stdexcept>
 
 namespace fs = std::filesystem;
-namespace shaolin::language {
+namespace openshao::language {
 namespace {
 using Bytes = std::vector<uint8_t>;
 std::atomic<bool> active{false};
@@ -31,7 +31,6 @@ struct DeferredMovie {
     }
 };
 std::vector<std::shared_ptr<DeferredMovie>> deferred_movies;
-constexpr std::array<const char*, 4> movies{"opening", "end006", "end011", "final"};
 uint32_t U32(std::span<const uint8_t> b, size_t at) {
     if (at > b.size() || b.size() - at < 4) throw std::runtime_error("Truncated language resource");
     return uint32_t(b[at]) | uint32_t(b[at+1]) << 8 | uint32_t(b[at+2]) << 16 | uint32_t(b[at+3]) << 24;
@@ -66,7 +65,7 @@ struct Window {
 };
 struct AudioSpan { uint64_t begin, length, replacement_offset; unsigned track; };
 
-} // namespace
+}
 
 fs::path FindInstalledPack(const fs::path& directory, std::string_view language) {
     return mods::EnabledLanguagePack(directory, language);
@@ -169,16 +168,22 @@ bool Mount(const fs::path& pack, std::span<const uint8_t> xbe,
 }
 bool MountPacks(std::span<const fs::path> packs,std::span<const uint8_t> xbe,
                 const SourceRead& read,const SourceSize& size,bool credits,std::string& error) {
+    std::vector<PackSelection> layers;for(const auto& pack:packs)layers.push_back({pack});
+    return MountPacks(layers,xbe,read,size,credits,error);
+}
+bool MountPacks(std::span<const PackSelection> packs,std::span<const uint8_t> xbe,
+                const SourceRead& read,const SourceSize& size,bool credits,std::string& error) {
     Disable(); error.clear();
     try {
         bool archive_resources=false;
-        for(const auto& pack:packs) {
+        for(const auto& selection:packs) {
+            const auto& pack=selection.directory;
             if(!fs::is_directory(pack))throw std::runtime_error("Installed mod folder is missing: "+pack.string());
             for(const auto& item:fs::recursive_directory_iterator(pack))
                 if(item.is_symlink()||!item.is_directory()&&!item.is_regular_file())
                     throw std::runtime_error("Mods must contain regular files and directories");
-            for(const auto* name:{"gamedata","audio/voices"})
-                if(fs::exists(pack/name)&&!fs::is_empty(pack/name))archive_resources=true;
+            if(selection.text && fs::exists(pack/"gamedata") && !fs::is_empty(pack/"gamedata"))archive_resources=true;
+            if(selection.voices && fs::exists(pack/"audio/voices") && !fs::is_empty(pack/"audio/voices"))archive_resources=true;
         }
         if(archive_resources) {
             ArchiveView archives;
@@ -189,10 +194,11 @@ bool MountPacks(std::span<const fs::path> packs,std::span<const uint8_t> xbe,
         const auto add=[&](std::string key,std::shared_ptr<const VirtualFile> file) {
             if(!overlays.emplace(Key(key),std::move(file)).second)throw std::runtime_error("Enabled mods replace the same game file: "+key);
         };
-        for(const auto& pack:packs) {
+        for(const auto& selection:packs) {
+            const auto& pack=selection.directory;
           const auto movie_folder=pack/"audio/movies";
           std::map<std::string,unsigned> supplied_movies;
-          if(fs::exists(movie_folder))for(const auto& item:fs::directory_iterator(movie_folder)) {
+          if(selection.voices && fs::exists(movie_folder))for(const auto& item:fs::directory_iterator(movie_folder)) {
             auto ext=item.path().extension().string();
             if(ext!=".adx"&&ext!=".aix")throw std::runtime_error("Movie audio must use .adx and .aix files");
             supplied_movies[item.path().stem().string()] |= ext==".adx"?1:2;
@@ -220,6 +226,7 @@ bool MountPacks(std::span<const fs::path> packs,std::span<const uint8_t> xbe,
             add("front/movies/" + stem + ".sfd",std::move(movie));
             ++statistics.movies;
         }
+        if(!selection.text)continue;
         struct Region { const char* file; uint32_t offset, address, size; };
         for (const auto& region : {Region{"small.xpr", 0x51D3E8, 0x538688, 0x4800}, Region{"large.xpr", 0x532018, 0x54D2B8, 0x20800}}) {
             if(!fs::exists(pack/"fonts"/region.file))continue;
@@ -278,4 +285,4 @@ std::shared_ptr<const VirtualFile> OverlayFile(const std::vector<std::string>& p
     const auto match = overlays.find(Key(name));
     return match == overlays.end() ? nullptr : match->second;
 }
-} // namespace shaolin::language
+}

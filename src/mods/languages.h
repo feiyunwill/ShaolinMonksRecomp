@@ -1,7 +1,7 @@
 #pragma once
 #include <array>
 #include <string_view>
-namespace shaolin::mods {
+namespace openshao::mods {
 inline constexpr std::array<std::string_view, 5> OriginalLanguages{"en", "fr", "de", "es", "it"};
 inline bool SameLanguage(std::string_view a,std::string_view b) {
     if(a.size()!=b.size())return false;

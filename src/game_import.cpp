@@ -20,14 +20,13 @@
 
 extern const char kImageSha1[];
 namespace fs = std::filesystem;
-namespace shaolin::setup {
+namespace openshao::setup {
 namespace {
 std::wstring Lower(std::wstring s) {
     std::transform(s.begin(), s.end(), s.begin(), [](wchar_t c) { return std::towlower(c); });
     return s;
 }
-// An Xbox path (backslashes, any case) under a host folder. Linux file
-// systems are case-sensitive, so each component is matched like Windows does.
+// Match Xbox path components without case sensitivity on case-sensitive host filesystems.
 fs::path HostPath(const fs::path& root, std::string_view name) {
 #ifdef _WIN32
     return root / std::string(name);

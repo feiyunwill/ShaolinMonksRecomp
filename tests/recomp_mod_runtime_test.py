@@ -14,12 +14,12 @@ def main():
     parser.add_argument('--disc', type=Path, required=True)
     parser.add_argument('--output', type=Path)
     args = parser.parse_args()
-    with tempfile.TemporaryDirectory(prefix='shaolin-mod-runtime-') as temp:
+    with tempfile.TemporaryDirectory(prefix='openshao-mod-runtime-') as temp:
         root = Path(temp)
         pack = root / 'mods/packages/RoutineProbe'
         (pack / 'scripts').mkdir(parents=True)
         # A failed replacement must report its error and continue through the original entry.
-        script = b'return {{address=0x000F40CA,replace=function(ctx) error("SHAOLIN_ROUTINE_PROBE") end}}'
+        script = b'return {{address=0x000F40CA,replace=function(ctx) error("OPENSHAO_ROUTINE_PROBE") end}}'
         (pack / 'scripts/probe.lua').write_bytes(script)
         manifest = dict(schema=2, id='RoutineProbe', name='Routine probe', summary='Runtime regression',
                         authors=['Tester'], type='gameplay', install_dir='packages/RoutineProbe',
@@ -45,7 +45,7 @@ def main():
             args.output.write_text(text, encoding='utf-8')
         assert result.returncode == 7, (result.returncode, text[-6000:])
         assert 'routine scripts active' in text, text[-6000:]
-        assert 'SHAOLIN_ROUTINE_PROBE' in text and 'Script disabled for this session' in text, text[-6000:]
+        assert 'OPENSHAO_ROUTINE_PROBE' in text and 'Script disabled for this session' in text, text[-6000:]
         assert 'Reset complete' in text, 'Original entry did not continue to device setup: ' + text[-6000:]
     print('PASS: installed Lua entry hook, controlled failure and original-game fallback')
 

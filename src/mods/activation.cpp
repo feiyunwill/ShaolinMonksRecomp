@@ -8,7 +8,7 @@
 #include <map>
 #include <set>
 #include <stdexcept>
-namespace shaolin::mods {
+namespace openshao::mods {
 namespace {
 std::string Key(std::string name) {
     for(auto& c:name){if(c=='\\')c='/';if(c>='A'&&c<='Z')c+='a'-'A';}

@@ -1,10 +1,11 @@
 #include <cmath>
 #include <cstdio>
 #include <imgui.h>
+#include <imgui_internal.h>
 #include "performance_overlay.h"
 
 int main() {
-    using namespace shaolin::performance;
+    using namespace openshao::performance;
     int failures = 0;
     auto check = [&](bool ok, const char* message) { if (!ok) { ++failures; std::fprintf(stderr, "FAIL: %s\n", message); } };
     check(!Visible(), "overlay must start hidden");
@@ -22,6 +23,15 @@ int main() {
     // ImGui measures a new auto-sized window during its first frame.
     ImGui::NewFrame(); Draw(60); ImGui::Render();
     check(ImGui::GetDrawData()->TotalVtxCount > 0, "enabled overlay must draw through the renderer UI callback");
+    const auto* overlay=ImGui::FindWindowByName("##openshao-performance");
+    check(overlay && overlay->Size.y>=64 && overlay->Size.x>=280,"The performance panel must leave room for a larger two-line version and timing display");
+    std::string logged;
+    // Capture rendered text in memory; never access the desktop clipboard.
+    io.ClipboardUserData=&logged;
+    io.SetClipboardTextFn=[](void* data,const char* text){*static_cast<std::string*>(data)=text;};
+    ImGui::NewFrame();ImGui::LogToClipboard();Draw(60);ImGui::LogFinish();ImGui::Render();
+    check(logged.find("OpenShao 0.3.0")!=std::string::npos && logged.find("60.0 FPS")!=std::string::npos,
+        "The visible performance panel must identify the port version alongside the measured timing");
     check(!io.WantCaptureKeyboard && !io.WantCaptureMouse, "performance display must not consume gameplay input");
     check(Message(0x100, 0x78, 0) && !Visible(), "second F9 press must hide the overlay");
     ImGui::NewFrame(); Draw(60); ImGui::Render();

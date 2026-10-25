@@ -19,7 +19,7 @@
 #include "runtime_paths.h"
 
 namespace fs = std::filesystem;
-namespace shaolin::setup {
+namespace openshao::setup {
 fs::path RememberedDisc() {
     try {
         std::ifstream file(paths::Selection(), std::ios::binary);
@@ -60,8 +60,7 @@ bool RememberDisc(const fs::path& disc, std::string& error) {
 }
 #ifndef _WIN32
 bool ChooseDisc(fs::path& disc) {
-    // Selecting default.xbe inside an extracted folder covers the folder case with one chooser.
-    return linux_platform::ChooseFile(disc, false, "Shaolin Monks Recomp - Select your game");
+    return linux_platform::ChooseFile(disc, false, "OpenShao - Select your game");
 }
 bool PrepareGame(const fs::path& input, Source& source, std::vector<uint8_t>& executable,
                  std::string& error, bool) {
@@ -79,7 +78,7 @@ bool ChooseDisc(fs::path& disc) {
         TASKDIALOGCONFIG welcome{sizeof(welcome)};
         welcome.dwFlags = TDF_USE_COMMAND_LINKS | TDF_ALLOW_DIALOG_CANCELLATION | TDF_SIZE_TO_CONTENT;
         welcome.dwCommonButtons = TDCBF_CANCEL_BUTTON;
-        welcome.pszWindowTitle = L"Shaolin Monks Recomp";
+        welcome.pszWindowTitle = L"OpenShao";
         welcome.hInstance = GetModuleHandleW(nullptr);
         welcome.pszMainIcon = MAKEINTRESOURCEW(1);
         welcome.pszMainInstruction = L"Select your copy of Shaolin Monks";
@@ -96,7 +95,7 @@ bool ChooseDisc(fs::path& disc) {
         if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog)))) {
             const COMDLG_FILTERSPEC filters[] = {{L"Xbox game files (*.iso; *.xiso; *.zip; default.xbe)", L"*.iso;*.xiso;*.zip;default.xbe"},
                                                 {L"All files", L"*.*"}};
-            dialog->SetTitle(L"Shaolin Monks Recomp - Select your game");
+            dialog->SetTitle(L"OpenShao - Select your game");
             dialog->SetFileTypes(2, filters);
             dialog->SetOptions(FOS_FILEMUSTEXIST | FOS_PATHMUSTEXIST | FOS_FORCEFILESYSTEM | FOS_DONTADDTORECENT |
                                (choice == 101 ? FOS_PICKFOLDERS : 0));
@@ -124,7 +123,7 @@ bool PrepareGame(const fs::path& input, Source& source, std::vector<uint8_t>& ex
     {
         Microsoft::WRL::ComPtr<IProgressDialog> progress;
         if (SUCCEEDED(CoCreateInstance(CLSID_ProgressDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&progress)))) {
-            progress->SetTitle(L"Shaolin Monks Recomp");
+            progress->SetTitle(L"OpenShao");
             progress->SetLine(1, L"Importing your game files...", FALSE, nullptr);
             progress->SetCancelMsg(L"Cancelling game import...", nullptr);
             progress->StartProgressDialog(nullptr, nullptr, PROGDLG_AUTOTIME | PROGDLG_NOMINIMIZE, nullptr);

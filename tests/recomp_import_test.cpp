@@ -10,15 +10,15 @@
 #include "runtime_paths.h"
 #include "host.h"
 
-namespace shaolin { Options options; }
+namespace openshao { Options options; }
 extern const char kImageSha1[] = "unused-in-cancelled-import";
 namespace fs = std::filesystem;
 
 int main() {
-    const auto root = fs::temp_directory_path() / ("shaolin-import-test-" + std::to_string(GetCurrentProcessId()));
+    const auto root = fs::temp_directory_path() / ("openshao-import-test-" + std::to_string(GetCurrentProcessId()));
     fs::create_directory(root);
     std::string error;
-    if (!shaolin::paths::Initialize(root, true, root / "data", error)) return 2;
+    if (!openshao::paths::Initialize(root, true, root / "data", error)) return 2;
     fs::create_directories(root / "data/game/previous");
     std::ofstream(root / "data/game/previous/keep.dat") << "keep";
     const auto zip_path = root / "game.zip";
@@ -30,10 +30,10 @@ int main() {
     ok = ok && mz_zip_writer_finalize_archive(&zip);
     mz_zip_writer_end(&zip);
     if (!ok) return 2;
-    shaolin::setup::Source source;
+    openshao::setup::Source source;
     std::vector<uint8_t> bytes;
     bool saw_data = false;
-    const bool accepted = shaolin::setup::PrepareSource(zip_path, source, bytes, error,
+    const bool accepted = openshao::setup::PrepareSource(zip_path, source, bytes, error,
         [&](uint64_t done, uint64_t) { if (done) saw_data = true; return done == 0; });
     ok = !accepted && saw_data && error.find("cancelled") != std::string::npos;
     ok = ok && fs::is_regular_file(root / "data/game/previous/keep.dat") && fs::is_regular_file(zip_path);

@@ -25,7 +25,7 @@ def archive(path, manifest, extra=None, metadata='mod.json'):
 
 
 def main():
-    with tempfile.TemporaryDirectory(prefix='shaolin-mod-test-') as temp:
+    with tempfile.TemporaryDirectory(prefix='openshao-mod-test-') as temp:
         root = Path(temp)
         target = b'The translated game data.\n' * 40 + b'!' * 100
         manifest = dict(schema=1, id='LanguagePack_PT-BR', name='Test LanguagePack', summary='Synthetic test',

@@ -3,8 +3,8 @@
 #include <string>
 #include <vector>
 #include <cstdint>
-namespace shaolin::mods {
-inline constexpr const char* CatalogUrl="https://raw.githubusercontent.com/OAleex/ShaolinMonksRecompKrypt/master/mods.json";
+namespace openshao::mods {
+inline constexpr const char* CatalogUrl="https://raw.githubusercontent.com/OAleex/OpenShao-Mods/master/mods.json";
 inline constexpr const char* GameSha256="48240902bf4a04eb89376217c529531032d3370749bcce91a194878cc49db74a";
 struct Patch {
     std::string path, source_hash, target_hash;

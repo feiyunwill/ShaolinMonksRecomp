@@ -3,43 +3,56 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
-#include <commctrl.h>
 #include <shellapi.h>
 #include <shobjidl.h>
 #include <wrl/client.h>
 #else
-#include <SDL3/SDL.h>
-#include <imgui.h>
-#include "linux/linux_launcher_window.h"
 #include "linux/linux_platform.h"
 #endif
-#include <cstdio>
+#include <SDL3/SDL.h>
+#include <imgui.h>
 #include <algorithm>
 #include <atomic>
-#include <charconv>
+#include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <fstream>
+#include <functional>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <sstream>
+#include <thread>
 #include <vector>
-#include <SDL3/SDL_gamepad.h>
 #include "launcher.h"
+#include "launcher_art.h"
 #include "launcher_settings.h"
-#include "launcher_ids.h"
+#include "launcher_window.h"
 #include "app/app.h"
 #include "controller.h"
-#include "mouse.h"
 #include "core/log.h"
+#include "file_ops.h"
 #include "game_setup.h"
 #include "host.h"
-#include "performance_overlay.h"
-#include "runtime_paths.h"
+#include "keyboard.h"
 #include "language_pack.h"
 #include "mods/browser.h"
 #include "mods/languages.h"
+#include "mods/version.h"
+#include "mouse.h"
+#include "performance_overlay.h"
+#include "runtime_paths.h"
+#include "updater.h"
 
 namespace fs = std::filesystem;
-namespace shaolin::launcher {
+namespace openshao::launcher {
 namespace {
 Settings current;
+std::atomic<std::shared_ptr<const Settings>> published{std::make_shared<const Settings>()};
+std::atomic<float> audio_gain{1.f};
+std::string requested_language,requested_voice_language;
+std::mutex settings_mutex;
+void Publish(){published.store(std::make_shared<const Settings>(current));audio_gain.store(current.master_volume/100.f);}
 std::atomic<bool> persist{true};
 std::wstring Wide(const std::string& text) { return fs::path(std::u8string(text.begin(), text.end())).wstring(); }
 std::string Narrow(const std::wstring& text) { auto bytes = fs::path(text).u8string(); return {bytes.begin(), bytes.end()}; }
@@ -49,6 +62,7 @@ toml::table Disk() {
 }
 void Apply(const Settings& s, bool save) {
     current = s; persist = save;
+    Publish();
     auto& host = app::Get();
     host.display_mode = s.display_mode == "fullscreen" ? app::DisplayMode::Fullscreen :
                         s.display_mode == "windowed" ? app::DisplayMode::Windowed : app::DisplayMode::Borderless;
@@ -57,201 +71,56 @@ void Apply(const Settings& s, bool save) {
     auto table = Merge({}, s);
     controller::Load(&table);
     mouse::Configure(s.mouse);
+    keyboard::Configure(s.keyboard);
     performance::SetVisible(s.show_fps);
 }
-struct LanguageRequest {std::string code;bool started=false;};
 bool NeedsLanguagePack(std::string_view code) {
     return !mods::IsOriginalLanguage(code)&&options.language_pack.empty()&&language::FindInstalledPack(paths::Mods(),code).empty();
 }
-const mods::Installed* InstalledLanguagePack(const mods::BrowserState& view,std::string_view code) {
-    const auto it=std::find_if(view.installed.begin(),view.installed.end(),[&](auto& row){
-        return row.mod.type=="language"&&mods::SameLanguage(row.mod.language,code);
-    });
-    return it==view.installed.end()?nullptr:&*it;
+std::string MissingLanguagePack(const Settings& settings) {
+    if(NeedsLanguagePack(settings.language))
+        return "The selected text language ("+settings.language+") requires an enabled language pack. Install or enable it in Mods.";
+    if(NeedsLanguagePack(settings.voice_language))
+        return "The selected voice language ("+settings.voice_language+") requires an enabled language pack. Install or enable it in Mods.";
+    return {};
 }
-std::string LanguagePackQuestion(const mods::BrowserState& view,std::string_view code) {
-    const auto choices=mods::LanguageChoices(view,code);
-    const auto choice=std::find_if(choices.begin(),choices.end(),[&](auto& row){return mods::SameLanguage(row.code,code);});
-    const auto name=choice==choices.end()?std::string(code):choice->name;
-    return name+" needs a language pack. "+(InstalledLanguagePack(view,code)?"Enable it now?":"Download, install and enable it now?");
-}
-template<typename ChooseGame>
-void ContinueLanguageInstall(mods::Browser& browser,LanguageRequest& request,ChooseGame choose_game) {
-    const auto view=browser.View();
-    if(request.code.empty()||view.busy)return;
-    if(request.started&&!view.error.empty()){request={};return;}
-    const auto* installed=InstalledLanguagePack(view,request.code);
-    if(installed&&fs::is_directory(paths::Mods()/installed->mod.install_dir)) {
-        if(!installed->enabled)browser.Enable(installed->mod.id,true);
-        request={};return;
-    }
-    if(request.started){request={};return;}
-    const auto id=mods::LanguageProvider(view,request.code);
-    const auto mod=std::find_if(view.catalog.begin(),view.catalog.end(),[&](auto& row){return row.id==id;});
-    if(mod==view.catalog.end()||!mods::LatestCompatible(*mod)) {
-        browser.Install(id,{});request={};return;
-    }
-    const auto game=choose_game();
-    if(game.empty()){request={};return;}
-    browser.Install(id,game);request.started=true;
-}
-#ifdef _WIN32
-enum Id { Mode = 2301, Width, Height, Scale, Aniso = 2306, Vsync, Volume = 2401, Overlay,
-          Deadzone = 2501, Rumble, Binding = 2600, Source = 2701, Browse, Saves, Logs, Data,
-          Original = 2801, Music, Effects, Speech, Brightness, Rounds, MatchTime, Camera,
-          Sensitivity = 2901, InvertMouse, MouseBinding = 2910,
-          ModList = 3001, ModDetails, ModInstall, ModToggle, ModRemove, ModUpdate, ModRefresh, ModFile, ModCancel, ModStatus, ModNotice, ModProgress,
-          DataPath = 3101, ChangeData, SavePath, ChangeSaves };
-struct Dialog {
-    Settings initial;
-    fs::path source;
-    bool source_changed = false;
-    std::vector<std::string> language_codes;
-    std::vector<HWND> pages[7];
-    fs::path data_folder, save_folder;
-    bool folders_saved = false;
-    std::unique_ptr<mods::Browser> mods;
-    std::vector<mods::Mod> mod_rows;
-    uint64_t mod_revision = UINT64_MAX;
-    LanguageRequest language_request;
-    std::string focus_language_mod;
-};
-HWND Add(HWND parent, Dialog& d, int page, const wchar_t* kind, const wchar_t* text, int id,
-         int x, int y, int width, int height, DWORD style = 0) {
-    RECT rect{x, y, x + width, y + height}; MapDialogRect(parent, &rect);
-    auto child = CreateWindowExW(kind == std::wstring(L"EDIT") ? WS_EX_CLIENTEDGE : 0, kind, text,
-        WS_CHILD | WS_VISIBLE | style, rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top,
-        parent, reinterpret_cast<HMENU>(INT_PTR(id)), GetModuleHandleW(nullptr), nullptr);
-    SendMessageW(child, WM_SETFONT, SendMessageW(parent, WM_GETFONT, 0, 0), TRUE);
-    d.pages[page].push_back(child);
-    return child;
-}
-void Label(HWND w, Dialog& d, int p, const wchar_t* text, int x, int y, int width = 155) {
-    Add(w, d, p, L"STATIC", text, -1, x, y + 2, width, 14);
-}
-void Combo(HWND w, Dialog& d, int p, int id, int x, int y, int width, const std::vector<std::wstring>& choices, bool editable = false) {
-    auto child = Add(w, d, p, L"COMBOBOX", L"", id, x, y, width, 180,
-        WS_TABSTOP | WS_VSCROLL | (editable ? CBS_DROPDOWN : CBS_DROPDOWNLIST));
-    for (const auto& choice : choices) SendMessageW(child, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(choice.c_str()));
-}
-void Field(HWND w, Dialog& d, int p, const wchar_t* label, int id, int y) {
-    Label(w, d, p, label, 20, y);
-    Add(w, d, p, L"EDIT", L"", id, 185, y, 220, 15, WS_TABSTOP | ES_AUTOHSCROLL);
-}
-std::wstring Text(HWND window, int id) {
-    auto child = GetDlgItem(window, id);
-    std::wstring value(GetWindowTextLengthW(child) + 1, L'\0');
-    value.resize(GetWindowTextW(child, value.data(), int(value.size())));
-    return value;
-}
-void Set(HWND w, int id, const std::wstring& value) { SetDlgItemTextW(w, id, value.c_str()); }
-void Number(HWND w, int id, int value) { Set(w, id, std::to_wstring(value)); }
-int Number(HWND w, int id) {
-    const auto text = Narrow(Text(w, id));
-    int value = 0;
-    const auto result = std::from_chars(text.data(), text.data() + text.size(), value);
-    return result.ec == std::errc{} && result.ptr == text.data() + text.size() ? value : -1;
-}
-void Select(HWND w, int id, int index) { SendDlgItemMessageW(w, id, CB_SETCURSEL, index, 0); }
-int Selected(HWND w, int id) { return int(SendDlgItemMessageW(w, id, CB_GETCURSEL, 0, 0)); }
-void Check(HWND w, int id, bool value) { CheckDlgButton(w, id, value ? BST_CHECKED : BST_UNCHECKED); }
-bool Checked(HWND w, int id) { return IsDlgButtonChecked(w, id) == BST_CHECKED; }
-void Fill(HWND w, const Settings& s) {
-    const auto* dialog = reinterpret_cast<Dialog*>(GetWindowLongPtrW(w, DWLP_USER));
-    const auto& choices = dialog->language_codes;
-    auto lang = std::find(choices.begin(), choices.end(), s.language);
-    Select(w, IDC_LANGUAGE, lang == choices.end() ? 0 : int(lang - choices.begin()));
-    Select(w, Mode, s.display_mode == "fullscreen" ? 0 : s.display_mode == "borderless" ? 1 : 2);
-    Number(w, Width, s.width); Number(w, Height, s.height); Number(w, Scale, s.render_percent);
-    Select(w, Aniso, s.aniso == 16 ? 4 : s.aniso == 8 ? 3 : s.aniso == 4 ? 2 : s.aniso == 2 ? 1 : 0);
-    Check(w, Vsync, s.vsync); Number(w, Volume, s.master_volume); Check(w, Overlay, s.show_fps);
-    Number(w, Deadzone, int(s.deadzone * 100 + .5)); Check(w, Rumble, s.rumble);
-    for (int i = 0; i < 10; ++i) Set(w, Binding + i, Wide(s.bindings[i]));
-    Number(w, Sensitivity, s.mouse.sensitivity); Check(w, InvertMouse, s.mouse.invert_y);
-    for (int i = 0; i < 5; ++i) {
-        const auto action = std::find(mouse::actions.begin(), mouse::actions.end(), s.mouse.bindings[i]);
-        Select(w, MouseBinding + i, action == mouse::actions.end() ? 0 : int(action - mouse::actions.begin()));
-    }
-    Check(w, Original, s.original_override);
-    Number(w, Music, s.music_volume); Number(w, Effects, s.effects_volume); Number(w, Speech, s.speech_volume);
-    Number(w, Brightness, s.brightness); Select(w, Rounds, s.versus_rounds == 1 ? 0 : 1);
-    Select(w, MatchTime, s.versus_time == 120 ? 0 : s.versus_time == 180 ? 1 : 2);
-    Select(w, Camera, s.camera_reverse ? 1 : 0);
-    for (int id = Music; id <= Camera; ++id) EnableWindow(GetDlgItem(w, id), s.original_override);
-}
-Settings Form(HWND w) {
-    Settings s;
-    const auto* state = reinterpret_cast<Dialog*>(GetWindowLongPtrW(w, DWLP_USER));
-    const int language = Selected(w, IDC_LANGUAGE);
-    s.language = state && language >= 0 && size_t(language) < state->language_codes.size() ? state->language_codes[language] : "";
-    s.display_mode = Selected(w, Mode) == 0 ? "fullscreen" : Selected(w, Mode) == 1 ? "borderless" : "windowed";
-    s.width = Number(w, Width); s.height = Number(w, Height); s.render_percent = Number(w, Scale);
-    const int levels[] = {0, 2, 4, 8, 16}; const int level = Selected(w, Aniso);
-    s.aniso = level >= 0 && level < 5 ? levels[level] : -1;
-    s.vsync = Checked(w, Vsync); s.master_volume = Number(w, Volume); s.show_fps = Checked(w, Overlay);
-    const int zone = Number(w, Deadzone);
-    s.deadzone = state && std::isfinite(state->initial.deadzone) && zone == int(state->initial.deadzone * 100 + .5)
-        ? state->initial.deadzone : zone / 100.;
-    s.rumble = Checked(w, Rumble);
-    for (int i = 0; i < 10; ++i) s.bindings[i] = Narrow(Text(w, Binding + i));
-    s.mouse.sensitivity = Number(w, Sensitivity); s.mouse.invert_y = Checked(w, InvertMouse);
-    for (int i = 0; i < 5; ++i) {
-        const int selected = Selected(w, MouseBinding + i);
-        s.mouse.bindings[i] = selected >= 0 && selected < int(mouse::actions.size()) ? mouse::actions[selected] : "";
-    }
-    s.original_override = Checked(w, Original);
-    s.music_volume = Number(w, Music); s.effects_volume = Number(w, Effects); s.speech_volume = Number(w, Speech);
-    s.brightness = Number(w, Brightness); s.versus_rounds = Selected(w, Rounds) == 0 ? 1 : 3;
-    s.versus_time = Selected(w, MatchTime) == 0 ? 120 : Selected(w, MatchTime) == 1 ? 180 : 0;
-    s.camera_reverse = Selected(w, Camera) == 1;
-    return s;
-}
-bool Valid(HWND w, const Settings& s) {
+bool PlayWithSavedSettings() {
+    Settings settings;
+    try { settings = Read(Disk()); }
+    catch (const std::exception& e) { paths::ReportError(L"Cannot read settings.toml.\n" + Wide(e.what())); return false; }
     std::string error;
-    if (Validate(s, error)) {
-        const std::vector<std::string> aliases{"south", "cross", "east", "circle", "west", "square", "north", "triangle"};
-        for (const auto& binding : s.bindings)
-            if (SDL_GetGamepadButtonFromString(binding.c_str()) == SDL_GAMEPAD_BUTTON_INVALID &&
-                std::find(aliases.begin(), aliases.end(), binding) == aliases.end()) {
-                error = "Unknown controller button: " + binding; break;
-            }
-        if (error.empty()) return true;
-    }
-    MessageBoxW(w, Wide(error).c_str(), L"Check your settings", MB_OK | MB_ICONWARNING);
-    return false;
-}
-bool Commit(HWND w, Dialog& d, const Settings& s) {
-    try {
-        std::string error;
-        if (d.source_changed) {
-            setup::Source source; std::vector<uint8_t> executable;
-            if (!setup::PrepareGame(d.source, source, executable, error, true) || !setup::RememberDisc(source.path, error))
-                throw std::runtime_error(error);
-            d.source = source.path; d.source_changed = false;
-        }
-        if (!Write(paths::Config(), Merge(Disk(), s), error)) throw std::runtime_error(error);
-        if (d.data_folder != paths::Root() || d.save_folder != paths::SaveRoot()) {
-            if (!paths::ChangeFolders(d.data_folder, d.save_folder, error)) throw std::runtime_error(error);
-            d.folders_saved = true;
-        }
-        return true;
-    } catch (const std::exception& e) {
-        MessageBoxW(w, Wide(e.what()).c_str(), L"Cannot save settings", MB_OK | MB_ICONERROR);
+    if (!Validate(settings, error)) { paths::ReportError(L"Check settings.toml: " + Wide(error)); return false; }
+    if(const auto missing=MissingLanguagePack(settings);!missing.empty()) {
+        paths::ReportError(Wide(missing));
         return false;
     }
+    Apply(settings, true);
+    if (options.configure_only) {
+        std::printf("Settings: %s\n", Narrow(paths::Config().wstring()).c_str());
+        return false;
+    }
+    return true;
 }
-void OpenDirectory(const fs::path& path) { ShellExecuteW(nullptr, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL); }
-bool ChoosePath(HWND owner, fs::path& path, bool folder) {
+
+// ---------------------------------------------------------------- platform helpers
+void OpenLocation(const std::string& target) {
+#ifdef _WIN32
+    ShellExecuteW(nullptr, L"open", Wide(target).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+#else
+    linux_platform::OpenFolder(files::FromUtf8(target));
+#endif
+}
+#ifdef _WIN32
+bool ChooseWithDialog(fs::path& path, bool folder, const wchar_t* title, const COMDLG_FILTERSPEC* filters = nullptr, UINT filter_count = 0) {
     const auto initialized = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
     bool chosen = false;
     {
         Microsoft::WRL::ComPtr<IFileOpenDialog> dialog;
         if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog)))) {
             dialog->SetOptions(FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST | FOS_DONTADDTORECENT | (folder ? FOS_PICKFOLDERS : FOS_FILEMUSTEXIST));
-            dialog->SetTitle(folder ? L"Choose an empty destination folder" : L"Install a mod from file");
-            const COMDLG_FILTERSPEC filter[] = {{L"Mod archives (*.tar.xz)", L"*.tar.xz"}};
-            if (!folder) dialog->SetFileTypes(1, filter);
-            if (SUCCEEDED(dialog->Show(owner))) {
+            dialog->SetTitle(title);
+            if (!folder && filter_count) dialog->SetFileTypes(filter_count, filters);
+            if (SUCCEEDED(dialog->Show(GetActiveWindow()))) {
                 Microsoft::WRL::ComPtr<IShellItem> item; PWSTR value = nullptr;
                 if (SUCCEEDED(dialog->GetResult(&item)) && SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &value))) {
                     path = value; CoTaskMemFree(value); chosen = true;
@@ -262,798 +131,977 @@ bool ChoosePath(HWND owner, fs::path& path, bool folder) {
     if (SUCCEEDED(initialized)) CoUninitialize();
     return chosen;
 }
-fs::path ModGame(HWND w, Dialog& d) {
-    setup::Source source; std::vector<uint8_t> executable; std::string error;
-    if (d.source.empty() || !setup::PrepareGame(d.source, source, executable, error, true)) {
-        MessageBoxW(w, Wide(error.empty() ? "Select your game in Files and support before installing mods." : error).c_str(), L"Cannot install mod", MB_OK | MB_ICONWARNING);
-        return {};
-    }
-    if (source.path != d.source) { d.source = source.path; d.source_changed = true; Set(w, Source, d.source.wstring()); }
-    return source.path;
-}
-void SelectPage(HWND w, Dialog& d, int selected) {
-    TabCtrl_SetCurSel(GetDlgItem(w, IDC_PAGES), selected);
-    for (int page = 0; page < 7; ++page)
-        for (auto child : d.pages[page]) ShowWindow(child, page == selected ? SW_SHOW : SW_HIDE);
-}
-void OfferLanguagePack(HWND w, Dialog& d) {
-    if (MessageBoxW(w, Wide(LanguagePackQuestion(d.mods->View(),Form(w).language)).c_str(), L"LanguagePack required",
-                    MB_YESNO | MB_ICONQUESTION) == IDYES) {
-        d.language_request={Form(w).language,false};
-        d.focus_language_mod=d.language_request.code;
-        SelectPage(w, d, 6);
-    }
-}
-void UpdateMods(HWND w, Dialog& d) {
-    ContinueLanguageInstall(*d.mods, d.language_request, [&] { return ModGame(w, d); });
-    const auto view = d.mods->View();
-    Set(w, ModNotice, view.updates ? L"Mod updates are available. Open the Mods tab." : L"Changes apply when you start the game.");
-    std::wstring status = Wide(view.error.empty() ? view.status : view.error);
-    if (view.busy && view.total) status += L" (" + std::to_wstring(std::min<uint64_t>(100, view.done * 100 / view.total)) + L"%)";
-    Set(w, ModStatus, status);
-    const auto progress = GetDlgItem(w, ModProgress);
-    const int percent = view.total ? int(std::clamp(double(view.done) / double(view.total), 0., 1.) * 100) : 0;
-    SendMessageW(progress, PBM_SETPOS, percent, 0);
-    if (d.mod_revision != view.revision) {
-        const auto selected_code=Form(w).language;
-        const auto choices=mods::LanguageChoices(view,selected_code);
-        d.language_codes.clear();SendDlgItemMessageW(w,IDC_LANGUAGE,CB_RESETCONTENT,0,0);
-        for(const auto& choice:choices) {
-            d.language_codes.push_back(choice.code);
-            const auto name=Wide(choice.name);
-            SendDlgItemMessageW(w,IDC_LANGUAGE,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(name.c_str()));
-        }
-        for(size_t i=0;i<d.language_codes.size();++i)if(mods::SameLanguage(d.language_codes[i],selected_code))Select(w,IDC_LANGUAGE,int(i));
-        const int selected = int(SendDlgItemMessageW(w, ModList, LB_GETCURSEL, 0, 0));
-        d.mod_rows = mods::DisplayMods(view); d.mod_revision = view.revision;
-        SendDlgItemMessageW(w, ModList, LB_RESETCONTENT, 0, 0);
-        for (const auto& m : d.mod_rows) {
-            auto label = Wide(m.name);
-            for (const auto& i : view.installed) if (i.mod.id == m.id) label += L"  " + Wide(i.mod.version) + (i.enabled ? L" (enabled)" : L" (disabled)");
-            SendDlgItemMessageW(w, ModList, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label.c_str()));
-        }
-        if (!d.mod_rows.empty()) SendDlgItemMessageW(w, ModList, LB_SETCURSEL, selected >= 0 && size_t(selected) < d.mod_rows.size() ? selected : 0, 0);
-    }
-    if (!d.focus_language_mod.empty()) {
-        for (size_t i = 0; i < d.mod_rows.size(); ++i) if (d.mod_rows[i].type=="language"&&mods::SameLanguage(d.mod_rows[i].language,d.focus_language_mod)) {
-            SendDlgItemMessageW(w, ModList, LB_SETCURSEL, i, 0);
-            d.focus_language_mod.clear();
-            break;
-        }
-    }
-    const int selected = int(SendDlgItemMessageW(w, ModList, LB_GETCURSEL, 0, 0));
-    const mods::Mod* mod = selected >= 0 && size_t(selected) < d.mod_rows.size() ? &d.mod_rows[selected] : nullptr;
-    const mods::Installed* installed = nullptr;
-    if (mod) for (const auto& i : view.installed) if (i.mod.id == mod->id) installed = &i;
-    const auto* release = mod ? mods::LatestCompatible(*mod) : nullptr;
-    std::string details = mod ? mod->summary : "Install official mods from the Krypt, or choose a local .tar.xz archive.";
-    if (mod) { details += "\r\nAuthors: "; for (const auto& a : mod->authors) details += a + " "; details += !mod->unsupported_reason.empty()?"\r\n"+mod->unsupported_reason:release ? "\r\nAvailable version: " + release->version : "\r\nNo published version is available yet."; }
-    Set(w, ModDetails, Wide(details));
-    EnableWindow(GetDlgItem(w, ModInstall), !view.busy && mod && release);
-    Set(w,ModInstall,installed?L"Reinstall":L"Install");
-    EnableWindow(GetDlgItem(w, ModToggle), !view.busy && installed);
-    Set(w, ModToggle, installed && installed->enabled ? L"Disable" : L"Enable");
-    EnableWindow(GetDlgItem(w, ModRemove), !view.busy && installed);
-    EnableWindow(GetDlgItem(w, ModUpdate), !view.busy && installed && release && mods::CompareVersions(release->version, installed->mod.version) > 0);
-    for (int id : {ModRefresh, ModFile, ChangeData, ChangeSaves}) EnableWindow(GetDlgItem(w, id), !view.busy && (id != ChangeData && id != ChangeSaves || !paths::DataFolderOverridden() && (id != ChangeSaves || options.save_dir.empty() && !options.portable_saves)));
-    EnableWindow(GetDlgItem(w, ModCancel), view.busy);
-}
-INT_PTR CALLBACK Procedure(HWND w, UINT message, WPARAM wp, LPARAM lp) {
-    auto* d = reinterpret_cast<Dialog*>(GetWindowLongPtrW(w, DWLP_USER));
-    if (message == WM_INITDIALOG) {
-        d = reinterpret_cast<Dialog*>(lp); SetWindowLongPtrW(w, DWLP_USER, lp);
-        SendMessageW(w, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(LoadIconW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(1))));
-        if (options.configure_only) { Set(w, IDC_SAVE_PLAY, L"Save and close"); Set(w, IDC_PLAY, L"Close"); }
-        const wchar_t* names[] = {L"General", L"Video", L"Controls", L"Mouse", L"Original game", L"Files and support", L"Mods"};
-        for (int i = 0; i < 7; ++i) { TCITEMW item{}; item.mask = TCIF_TEXT; item.pszText = const_cast<wchar_t*>(names[i]); TabCtrl_InsertItem(GetDlgItem(w, IDC_PAGES), i, &item); }
-        Label(w, *d, 0, L"Game language", 20, 38);
-        std::vector<std::wstring> language_names;
-        for(const auto& choice:mods::LanguageChoices(d->mods->View(),d->initial.language)) {
-            d->language_codes.push_back(choice.code);language_names.push_back(Wide(choice.name));
-        }
-        Combo(w, *d, 0, IDC_LANGUAGE, 185, 36, 220, language_names);
-        Field(w, *d, 0, L"Master volume (%)", Volume, 66);
-        Add(w, *d, 0, L"BUTTON", L"Show FPS and frame time (F9)", Overlay, 20, 94, 310, 16, WS_TABSTOP | BS_AUTOCHECKBOX);
-        Label(w, *d, 0, L"Original game options", 20, 127, 380);
-        Add(w, *d, 0, L"STATIC", L"The Original game tab can set music, effects, speech, brightness, versus rules, and camera control. You can also change them in the game's Options menu.", -1, 20, 147, 384, 44);
-        Add(w, *d, 0, L"STATIC", L"Language packs add translated text, voices, and movies. Original language audio depends on the files included with your copy.", -1, 20, 202, 384, 38);
-        Label(w, *d, 1, L"Display mode", 20, 38);
-        Combo(w, *d, 1, Mode, 185, 36, 220, {L"Fullscreen", L"Borderless", L"Windowed"});
-        Field(w, *d, 1, L"Width (0 = desktop)", Width, 66); Field(w, *d, 1, L"Height (0 = desktop)", Height, 91);
-        Field(w, *d, 1, L"Render scale (%)", Scale, 116);
-        Label(w, *d, 1, L"Anisotropic filtering", 20, 143);
-        Combo(w, *d, 1, Aniso, 185, 141, 220, {L"Game default", L"2x", L"4x", L"8x", L"16x"});
-        Add(w, *d, 1, L"BUTTON", L"V-Sync", Vsync, 20, 169, 200, 16, WS_TABSTOP | BS_AUTOCHECKBOX);
-        Label(w, *d, 2, L"Dead zone (%)", 20, 37, 100);
-        Add(w, *d, 2, L"EDIT", L"", Deadzone, 120, 35, 55, 15, WS_TABSTOP | ES_AUTOHSCROLL);
-        Add(w, *d, 2, L"BUTTON", L"Vibration", Rumble, 275, 37, 120, 16, WS_TABSTOP | BS_AUTOCHECKBOX);
-        const wchar_t* labels[] = {L"A", L"B", L"X", L"Y", L"Black / R1", L"White / L1", L"Start", L"Back", L"Left stick click", L"Right stick click"};
-        const std::vector<std::wstring> buttons{L"a", L"b", L"x", L"y", L"leftshoulder", L"rightshoulder", L"start", L"back", L"leftstick", L"rightstick", L"dpup", L"dpdown", L"dpleft", L"dpright", L"guide"};
-        for (int i = 0; i < 10; ++i) {
-            const int x = i < 5 ? 20 : 225, y = 94 + i % 5 * 26;
-            Label(w, *d, 2, labels[i], x, y, 80); Combo(w, *d, 2, Binding + i, x + 80, y, 100, buttons, true);
-        }
-        Add(w, *d, 2, L"STATIC", L"Keyboard: WASD, arrows, Space, Esc/Ctrl, J, K, Q, C, Shift, E, Enter, Backspace. Controller fields use SDL button names.", -1, 20, 233, 385, 31);
-        Field(w, *d, 3, L"Mouse sensitivity (%)", Sensitivity, 36);
-        Add(w, *d, 3, L"BUTTON", L"Invert vertical camera movement", InvertMouse, 20, 64, 385, 16, WS_TABSTOP | BS_AUTOCHECKBOX);
-        const wchar_t* mouse_labels[] = {L"Left button", L"Right button", L"Middle button", L"Side button 1", L"Side button 2"};
-        const std::vector<std::wstring> mouse_actions{L"None", L"A", L"B", L"X", L"Y", L"Black", L"White", L"Left trigger", L"Right trigger", L"Start", L"Back", L"Left stick click", L"Right stick click"};
-        for (int i = 0; i < 5; ++i) {
-            Label(w, *d, 3, mouse_labels[i], 20, 96 + i * 26);
-            Combo(w, *d, 3, MouseBinding + i, 185, 94 + i * 26, 220, mouse_actions);
-        }
-        Add(w, *d, 3, L"STATIC", L"Move the mouse to control the original camera. F10 releases or captures the pointer. Click inside the game to capture it again.", -1, 20, 233, 385, 31);
-        Add(w, *d, 4, L"BUTTON", L"Apply these original game options at startup", Original, 20, 35, 385, 16, WS_TABSTOP | BS_AUTOCHECKBOX);
-        Field(w, *d, 4, L"Music volume (%)", Music, 62);
-        Field(w, *d, 4, L"Sound effects (%)", Effects, 85);
-        Field(w, *d, 4, L"Speech volume (%)", Speech, 108);
-        Field(w, *d, 4, L"Brightness (%)", Brightness, 131);
-        Label(w, *d, 4, L"Versus rounds", 20, 156);
-        Combo(w, *d, 4, Rounds, 185, 154, 220, {L"1", L"3"});
-        Label(w, *d, 4, L"Versus match time", 20, 179);
-        Combo(w, *d, 4, MatchTime, 185, 177, 220, {L"120 seconds", L"180 seconds", L"Unlimited"});
-        Label(w, *d, 4, L"Camera control", 20, 202);
-        Combo(w, *d, 4, Camera, 185, 200, 220, {L"Normal", L"Reverse"});
-        Add(w, *d, 4, L"STATIC", L"When disabled, the game keeps its own saved options. Brightness zero uses the original neutral adjustment.", -1, 20, 233, 385, 31);
-        Label(w, *d, 5, L"Game source", 20, 38);
-        Add(w, *d, 5, L"EDIT", L"", Source, 20, 58, 315, 31, ES_READONLY | ES_MULTILINE | ES_AUTOHSCROLL);
-        Add(w, *d, 5, L"BUTTON", L"Choose...", Browse, 342, 58, 65, 18, WS_TABSTOP);
-        Set(w, Source, d->source.empty() ? L"No game selected" : d->source.wstring());
-        Add(w, *d, 5, L"BUTTON", L"Open saves", Saves, 20, 107, 112, 20, WS_TABSTOP);
-        Add(w, *d, 5, L"BUTTON", L"Open logs", Logs, 153, 107, 112, 20, WS_TABSTOP);
-        Add(w, *d, 5, L"BUTTON", L"Open configuration", Data, 286, 107, 121, 20, WS_TABSTOP);
-        Label(w, *d, 5, L"Data folder", 20, 139);
-        Add(w, *d, 5, L"EDIT", d->data_folder.c_str(), DataPath, 20, 157, 315, 16, ES_READONLY | ES_AUTOHSCROLL);
-        Add(w, *d, 5, L"BUTTON", L"Change...", ChangeData, 342, 156, 65, 18, WS_TABSTOP);
-        Label(w, *d, 5, L"Saves folder (contains hdd)", 20, 181, 300);
-        Add(w, *d, 5, L"EDIT", d->save_folder.c_str(), SavePath, 20, 199, 315, 16, ES_READONLY | ES_AUTOHSCROLL);
-        Add(w, *d, 5, L"BUTTON", L"Change...", ChangeSaves, 342, 198, 65, 18, WS_TABSTOP);
-        Add(w, *d, 5, L"STATIC", L"Folder changes move your files after you save, close and reopen the launcher. Command-line folder overrides take priority.", -1, 20, 233, 385, 31);
-        Add(w, *d, 6, L"LISTBOX", L"", ModList, 20, 36, 385, 64, WS_TABSTOP | WS_VSCROLL | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT);
-        Add(w, *d, 6, L"STATIC", L"", ModDetails, 20, 105, 385, 47);
-        Add(w, *d, 6, L"BUTTON", L"Install", ModInstall, 20, 158, 86, 19, WS_TABSTOP);
-        Add(w, *d, 6, L"BUTTON", L"Enable", ModToggle, 117, 158, 86, 19, WS_TABSTOP);
-        Add(w, *d, 6, L"BUTTON", L"Uninstall", ModRemove, 215, 158, 86, 19, WS_TABSTOP);
-        Add(w, *d, 6, L"BUTTON", L"Update", ModUpdate, 313, 158, 92, 19, WS_TABSTOP);
-        Add(w, *d, 6, L"BUTTON", L"Check for updates", ModRefresh, 20, 187, 122, 19, WS_TABSTOP);
-        Add(w, *d, 6, L"BUTTON", L"Install from file...", ModFile, 150, 187, 135, 19, WS_TABSTOP);
-        Add(w, *d, 6, L"BUTTON", L"Cancel operation", ModCancel, 293, 187, 112, 19, WS_TABSTOP);
-        const auto progress = Add(w, *d, 6, PROGRESS_CLASSW, L"", ModProgress, 20, 217, 385, 10);
-        SendMessageW(progress, PBM_SETRANGE32, 0, 100);
-        Add(w, *d, 6, L"STATIC", L"", ModStatus, 20, 233, 385, 31);
-        RECT notice{10, 289, 430, 302}; MapDialogRect(w, &notice);
-        auto notice_window = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE, notice.left, notice.top, notice.right-notice.left, notice.bottom-notice.top, w, reinterpret_cast<HMENU>(INT_PTR(ModNotice)), GetModuleHandleW(nullptr), nullptr);
-        SendMessageW(notice_window, WM_SETFONT, SendMessageW(w, WM_GETFONT, 0, 0), TRUE);
-        Fill(w, d->initial);
-        for (int page = 1; page < 7; ++page) for (auto child : d->pages[page]) ShowWindow(child, SW_HIDE);
-        SetTimer(w, 1, 150, nullptr); UpdateMods(w, *d);
-        if (!paths::MoveWarning().empty()) MessageBoxW(w, Wide(paths::MoveWarning()).c_str(), L"Folder move", MB_OK | MB_ICONWARNING);
-        return TRUE;
-    }
-    if (!d) return FALSE;
-    if (message == WM_TIMER) { UpdateMods(w, *d); return TRUE; }
-    if (message == WM_DESTROY) { KillTimer(w, 1); d->mods->Cancel(); return TRUE; }
-    if (message == WM_CTLCOLORSTATIC) {
-        const auto child = reinterpret_cast<HWND>(lp);
-        wchar_t kind[32]{}; GetClassNameW(child, kind, 32);
-        if (std::wstring(kind) == L"Static" || std::wstring(kind) == L"Button") {
-            const bool page = std::any_of(std::begin(d->pages), std::end(d->pages), [&](const auto& controls) {
-                return std::find(controls.begin(), controls.end(), child) != controls.end();
-            });
-            if (page) {
-                SetBkColor(reinterpret_cast<HDC>(wp), GetSysColor(COLOR_WINDOW));
-                return reinterpret_cast<INT_PTR>(GetSysColorBrush(COLOR_WINDOW));
-            }
-        }
-    }
-    if (message == WM_NOTIFY && reinterpret_cast<NMHDR*>(lp)->idFrom == IDC_PAGES && reinterpret_cast<NMHDR*>(lp)->code == TCN_SELCHANGE) {
-        SelectPage(w, *d, TabCtrl_GetCurSel(GetDlgItem(w, IDC_PAGES)));
-        return TRUE;
-    }
-    if (message == WM_COMMAND || message == WM_CLOSE) {
-        const auto id = message == WM_CLOSE ? IDCANCEL : LOWORD(wp);
-        if (id == IDC_LANGUAGE && HIWORD(wp) == CBN_SELCHANGE) {
-            const auto selected = Selected(w, IDC_LANGUAGE);
-            if (selected >= 0 && size_t(selected) < d->language_codes.size() && NeedsLanguagePack(d->language_codes[selected]))
-                OfferLanguagePack(w, *d);
-            return TRUE;
-        }
-        if (id == ChangeData || id == ChangeSaves) {
-            if (paths::DataFolderOverridden() || id == ChangeSaves && (!options.save_dir.empty() || options.portable_saves)) return TRUE;
-            fs::path path; if (ChoosePath(w, path, true)) { if (id == ChangeData) { d->data_folder = path; Set(w, DataPath, path.wstring()); } else { d->save_folder = path; Set(w, SavePath, path.wstring()); } }
-            return TRUE;
-        }
-        if (id == ModRefresh) { d->mods->Refresh(); return TRUE; }
-        if (id == ModCancel) { d->language_request = {}; d->mods->Cancel(); return TRUE; }
-        if (id == ModFile) { fs::path path; if (ChoosePath(w, path, false)) { const auto game = ModGame(w, *d); if (!game.empty()) d->mods->InstallFile(path, game); } return TRUE; }
-        if (id == ModList) { UpdateMods(w, *d); return TRUE; }
-        if (id >= ModInstall && id <= ModUpdate) {
-            const auto index = int(SendDlgItemMessageW(w, ModList, LB_GETCURSEL, 0, 0));
-            if (index < 0 || size_t(index) >= d->mod_rows.size()) return TRUE;
-            const auto& mod = d->mod_rows[index]; const auto view = d->mods->View(); if (view.busy) return TRUE;
-            if (id == ModInstall || id == ModUpdate) { const auto game = ModGame(w, *d); if (!game.empty()) d->mods->Install(mod.id, game); }
-            else if (id == ModToggle) { for (const auto& i : view.installed) if (i.mod.id == mod.id) d->mods->Enable(mod.id, !i.enabled); }
-            else if (MessageBoxW(w, (L"Uninstall " + Wide(mod.name) + L"?").c_str(), L"Uninstall mod", MB_YESNO | MB_ICONQUESTION) == IDYES) d->mods->Remove(mod.id);
-            return TRUE;
-        }
-        if (id == IDC_DEFAULTS) { Fill(w, Settings{}); return TRUE; }
-        if (id == Original) {
-            for (int field = Music; field <= Camera; ++field) EnableWindow(GetDlgItem(w, field), Checked(w, Original));
-            return TRUE;
-        }
-        if (id == Browse) {
-            fs::path selected;
-            if (setup::ChooseDisc(selected)) { d->source = selected; d->source_changed = true; Set(w, Source, selected.wstring()); }
-            return TRUE;
-        }
-        if (id == Logs) { OpenDirectory(paths::Logs()); return TRUE; }
-        if (id == Data) { OpenDirectory(paths::Root()); return TRUE; }
-        if (id == Saves) {
-            std::string error;
-            const auto root = !options.save_dir.empty() ? fs::absolute(options.save_dir) : options.portable_saves ?
-                app::ExeDir() / "hdd" : paths::SaveRoot() / "hdd";
-            std::error_code ec;
-            if (fs::is_directory(root, ec)) OpenDirectory(root);
-            else MessageBoxW(w, (L"Save folder:\n" + root.wstring() + L"\n\nThe game creates this folder when it starts.").c_str(), L"Saves", MB_OK);
-            return TRUE;
-        }
-        if (id != IDC_SAVE_PLAY && id != IDC_PLAY && id != IDCANCEL) return FALSE;
-        const auto draft = Form(w);
-        const bool closing = id == IDCANCEL || options.configure_only;
-        const auto operation = d->mods->View();
-        if (!closing && operation.busy && !operation.checking) {
-            SelectPage(w, *d, 6);
-            MessageBoxW(w, L"Wait for the mod operation to finish, or cancel it in the Mods tab.", L"Mod operation in progress", MB_OK);
-            return TRUE;
-        }
-        if (!closing && NeedsLanguagePack(draft.language)) { OfferLanguagePack(w, *d); return TRUE; }
-        const bool dirty = draft != d->initial || d->source_changed || d->data_folder != paths::Root() || d->save_folder != paths::SaveRoot();
-        int choice = id == IDC_SAVE_PLAY ? IDYES : IDNO;
-        if (dirty && id != IDC_SAVE_PLAY) choice = MessageBoxW(w,
-            closing ? L"Save your changes before closing?" : L"Save your changes before starting the game?",
-            L"Unsaved settings", MB_YESNOCANCEL | MB_ICONQUESTION);
-        if (choice == IDCANCEL) return TRUE;
-        if (!closing || choice == IDYES) if (!Valid(w, draft)) return TRUE;
-        if (choice == IDYES && !Commit(w, *d, draft)) return TRUE;
-        if (d->folders_saved) { MessageBoxW(w, L"Folder changes are saved. Reopen the launcher to move your files and use the new folders.", L"Folders saved", MB_OK); EndDialog(w, 0); return TRUE; }
-        if (!closing) {
-            Apply(draft, choice == IDYES || !dirty);
-            if (!d->source.empty()) { options.disc = d->source; options.game.clear(); options.register_disc = d->source_changed && ShouldPersist(); }
-        }
-        EndDialog(w, closing ? 0 : 1);
-        return TRUE;
-    }
-    return FALSE;
-}
-}
-bool Show() {
-    Dialog dialog;
-    dialog.source = !options.disc.empty() ? options.disc : !options.game.empty() ? options.game : setup::RememberedDisc();
-    std::error_code unavailable;
-    if (!options.configure_only && options.disc.empty() && options.game.empty() &&
-        (dialog.source.empty() || !fs::exists(dialog.source, unavailable))) {
-        fs::path selected;
-        if (!setup::ChooseDisc(selected)) return false;
-        setup::Source source; std::vector<uint8_t> executable; std::string error;
-        if (!setup::PrepareGame(selected, source, executable, error, true) || !setup::RememberDisc(source.path, error)) {
-            paths::ReportError(Wide(error)); return false;
-        }
-        dialog.source = source.path;
-        options.disc = source.path;
-    }
-    try { dialog.initial = Read(Disk()); }
-    catch (const std::exception& e) { paths::ReportError(L"Cannot read settings.toml.\n" + Wide(e.what())); return false; }
-    dialog.data_folder = paths::Root(); dialog.save_folder = paths::SaveRoot();
-    dialog.mods = std::make_unique<mods::Browser>(paths::Mods());
-    INITCOMMONCONTROLSEX controls{sizeof(controls), ICC_TAB_CLASSES | ICC_STANDARD_CLASSES | ICC_PROGRESS_CLASS}; InitCommonControlsEx(&controls);
-    const auto result = DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_LAUNCHER), nullptr, Procedure, reinterpret_cast<LPARAM>(&dialog));
-    if (result == -1) paths::ReportError(L"Cannot open the settings window.");
-    return result == 1;
-}
+#endif
+bool ChooseFolder(fs::path& path, const char* title) {
+#ifdef _WIN32
+    return ChooseWithDialog(path, true, Wide(title).c_str());
 #else
-// The Linux settings window: the same tabs and settings as the Windows dialog, drawn with Dear ImGui.
-// Without a display or Vulkan it is skipped, and the saved settings.toml applies as it is.
-struct Draft {
-    Settings initial, s;
-    fs::path source;
-    bool source_changed = false;
-    std::vector<std::string> language_codes, language_names;
-    enum class Popup { None, Unsaved, Error, RemoveMod, LanguagePack } popup = Popup::None;
-    bool popup_opened = false;
-    std::string message, message_title;
-    enum class Action { None, Play, Close } pending = Action::None;
-    int result = -1;  // 0 close, 1 play
-    fs::path data_folder, save_folder;
-    bool folders_saved = false, close_after_message = false;
-    std::unique_ptr<mods::Browser> mods;
-    std::string remove_id;
-    LanguageRequest language_request;
-    bool select_mods_tab=false;
-    uint64_t language_revision=UINT64_MAX;
-};
-void OfferLanguagePack(Draft& d) {
-    d.message = LanguagePackQuestion(d.mods->View(),d.s.language);
-    d.popup = Draft::Popup::LanguagePack;
-    d.popup_opened = false;
+    return linux_platform::ChooseFile(path, true, title);
+#endif
 }
-void Fail(Draft& d, const std::string& title, const std::string& text) {
-    d.popup = Draft::Popup::Error; d.popup_opened = false; d.message_title = title; d.message = text;
+bool ChooseModArchive(fs::path& path) {
+#ifdef _WIN32
+    const COMDLG_FILTERSPEC filter[] = {{L"Mod archives (*.tar.xz)", L"*.tar.xz"}};
+    return ChooseWithDialog(path, false, L"Install a mod from file", filter, 1);
+#else
+    return linux_platform::ChooseFile(path, false, "Install a mod from file");
+#endif
 }
-bool Valid(Draft& d, const Settings& s) {
-    std::string error;
-    if (Validate(s, error)) {
-        const std::vector<std::string> aliases{"south", "cross", "east", "circle", "west", "square", "north", "triangle"};
-        for (const auto& binding : s.bindings)
-            if (SDL_GetGamepadButtonFromString(binding.c_str()) == SDL_GAMEPAD_BUTTON_INVALID &&
-                std::find(aliases.begin(), aliases.end(), binding) == aliases.end()) {
-                error = "Unknown controller button: " + binding; break;
-            }
-        if (error.empty()) return true;
+
+bool ChooseGameSource(fs::path& path, bool folder) {
+#ifdef _WIN32
+    const COMDLG_FILTERSPEC filters[] = {{L"Xbox game files (*.iso; *.xiso; *.zip; default.xbe)", L"*.iso;*.xiso;*.zip;default.xbe"},
+                                         {L"All files", L"*.*"}};
+    return ChooseWithDialog(path, folder, folder ? L"Choose the extracted game folder" : L"Choose your game file", filters, 2);
+#else
+    return linux_platform::ChooseFile(path, folder, folder ? "Choose the extracted game folder" : "Choose your game file");
+#endif
+}
+
+// ---------------------------------------------------------------- session
+// Game is the source selection page. It replaces the tabs until a usable game is chosen.
+enum class Page { Play, Mods, Files, About, Game };
+const char* PageName(Page page) {
+    switch (page) {
+        case Page::Mods: return "mods"; case Page::Files: return "files"; case Page::About: return "about";
+        case Page::Game: return "game"; default: return "play";
     }
-    Fail(d, "Check your settings", error);
-    return false;
 }
-bool Commit(Draft& d) {
-    try {
+
+// Checks or imports a chosen game away from the interface thread, so ZIP imports show progress and can be cancelled.
+class GamePreparation {
+public:
+    explicit GamePreparation(fs::path input) : input_(std::move(input)) {
+        worker_ = std::thread([this] {
+            setup::Source prepared; std::vector<uint8_t> executable; std::string error;
+            bool ok = setup::PrepareSource(input_, prepared, executable, error, [this](uint64_t done, uint64_t total) {
+                done_ = done; total_ = total;
+                return !cancel_.load();
+            });
+            if (ok && !setup::RememberDisc(prepared.path, error)) ok = false;
+            std::lock_guard lock(mutex_);
+            ok_ = ok; error_ = cancel_ ? "The game import was cancelled." : error; path_ = prepared.path; finished_ = true;
+        });
+    }
+    ~GamePreparation() { cancel_ = true; if (worker_.joinable()) worker_.join(); }
+    void Cancel() { cancel_ = true; }
+    bool Finished() { std::lock_guard lock(mutex_); return finished_; }
+    // Valid after Finished().
+    bool Ok() { std::lock_guard lock(mutex_); return ok_; }
+    std::string Error() { std::lock_guard lock(mutex_); return error_; }
+    fs::path Path() { std::lock_guard lock(mutex_); return path_; }
+    float Progress() const { const uint64_t total = total_; return total ? float(double(done_.load()) / double(total)) : 0.f; }
+    bool Importing() const { return total_.load() != 0; }
+    bool Cancelling() const { return cancel_.load(); }
+private:
+    fs::path input_;
+    std::thread worker_;
+    std::mutex mutex_;
+    std::atomic<bool> cancel_{false};
+    std::atomic<uint64_t> done_{0}, total_{0};
+    bool finished_ = false, ok_ = false;
+    std::string error_;
+    fs::path path_;
+};
+
+struct Popup {
+    std::string title, text, confirm;  // an empty confirm label shows one dismiss button
+    std::function<void()> action;
+    bool close_after = false;
+};
+
+struct Session {
+    Page page = Page::Play;
+    Settings settings;
+    fs::path source;
+    fs::path data_folder, save_folder;
+    std::unique_ptr<mods::Browser> mods;
+    std::unique_ptr<update::Updater> updater;
+    std::optional<Popup> popup;
+    int result = -1;  // 0 closes, 1 plays
+    bool relaunch = false, check_updates = true;
+    bool game_required = false;  // no usable game yet: the selection page cannot be left
+    Page game_return = Page::Play;
+    std::unique_ptr<GamePreparation> preparing;
+    std::string game_error;
+    float reveal = 0.f;  // the ensō draws itself once when the launcher opens
+
+    void Message(std::string title, std::string text, bool close_after = false) {
+        popup = Popup{std::move(title), std::move(text), {}, {}, close_after};
+    }
+    void Confirm(std::string title, std::string text, std::string label, std::function<void()> action) {
+        popup = Popup{std::move(title), std::move(text), std::move(label), std::move(action), false};
+    }
+    void Dismiss() {
+        if (!popup) return;
+        const bool close = popup->close_after;
+        popup.reset();
+        if (close) result = 0;
+    }
+    void Accept() {
+        if (!popup) return;
+        auto action = popup->action;
+        const bool close = popup->close_after;
+        popup.reset();
+        if (action) action();
+        if (close) result = 0;
+    }
+
+    bool Busy() const { const auto view = mods->View(); return view.busy && !view.checking; }
+
+    void Play() {
+        if (options.configure_only) { Close(); return; }
+        if (source.empty()) { ChangeGame(); return; }
+        if (Busy()) {
+            page = Page::Mods;
+            Message("Mod operation in progress", "Wait for the mod operation to finish, or cancel it in Mods.");
+            return;
+        }
+        if (const auto missing = MissingLanguagePack(settings); !missing.empty()) {
+            page = Page::Mods;
+            Message("Language pack required", missing);
+            return;
+        }
         std::string error;
-        if (d.source_changed) {
-            setup::Source source; std::vector<uint8_t> executable;
-            if (!setup::PrepareGame(d.source, source, executable, error, true) || !setup::RememberDisc(source.path, error))
-                throw std::runtime_error(error);
-            d.source = source.path; d.source_changed = false;
+        if (!Validate(settings, error)) { Message("Check your settings", error); return; }
+        if (updater) updater->Cancel();
+        Apply(settings, true);
+        if (!source.empty()) { options.disc = source; options.game.clear(); }
+        result = 1;
+    }
+    void Close() {
+        if (updater) updater->Cancel();
+        result = 0;
+    }
+
+    // Opens the selection page, or checks the given path directly and remembers it.
+    void ChangeGame(const fs::path& chosen = {}) {
+        if (chosen.empty()) {
+            if (page != Page::Game) game_return = page;
+            game_error.clear();
+            page = Page::Game;
+            return;
         }
-        if (!Write(paths::Config(), Merge(Disk(), d.s), error)) throw std::runtime_error(error);
-        if (d.data_folder != paths::Root() || d.save_folder != paths::SaveRoot()) {
-            if (!paths::ChangeFolders(d.data_folder, d.save_folder, error)) throw std::runtime_error(error);
-            d.folders_saved = true;
+        if (preparing) return;
+        game_error.clear();
+        preparing = std::make_unique<GamePreparation>(chosen);
+    }
+    void ChooseGame(bool folder) {
+        fs::path selected;
+        if (!preparing && ChooseGameSource(selected, folder)) ChangeGame(selected);
+    }
+    void LeaveGame() {
+        if (game_required || preparing) return;
+        page = game_return == Page::Game ? Page::Play : game_return;
+    }
+    // Applies a finished selection on the interface thread.
+    void PollGame() {
+        if (!preparing || !preparing->Finished()) return;
+        if (preparing->Ok()) {
+            source = preparing->Path();
+            game_required = false;
+            page = game_return == Page::Game ? Page::Play : game_return;
+        } else game_error = preparing->Error();
+        preparing.reset();
+    }
+    fs::path ModGame() {
+        setup::Source prepared; std::vector<uint8_t> executable; std::string error;
+        if (source.empty() || !setup::PrepareGame(source, prepared, executable, error, true)) {
+            Message("Cannot install mod", error.empty() ? "Choose your game in Files before installing mods." : error);
+            return {};
         }
-        d.initial = d.s;
-        return true;
-    } catch (const std::exception& e) {
-        Fail(d, "Cannot save settings", e.what());
+        source = prepared.path;
+        return prepared.path;
+    }
+    void InstallMod(const std::string& id) { if (const auto game = ModGame(); !game.empty()) mods->Install(id, game); }
+    void InstallModFile(const fs::path& file) { if (const auto game = ModGame(); !game.empty()) mods->InstallFile(file, game); }
+    void RemoveMod(const mods::Mod& mod) {
+        const auto id = mod.id;
+        Confirm("Remove " + mod.name + "?", "The mod's files are removed from your data folder. You can install it again later.", "Remove",
+                [this, id] { mods->Remove(id); });
+    }
+    void ToggleMod(const std::string& id) {
+        for (const auto& installed : mods->View().installed)
+            if (installed.mod.id == id) { mods->Enable(id, !installed.enabled); return; }
+    }
+
+    void RestoreVideo() {
+        auto safe = settings;
+        safe.display_mode = "borderless"; safe.width = safe.height = 0; safe.render_percent = 100;
+        safe.aspect_ratio = "original"; safe.vsync = true;
+        std::string error;
+        try { if (!Write(paths::Config(), Merge(Disk(), safe), error)) throw std::runtime_error(error); }
+        catch (const std::exception& e) { Message("Cannot restore video settings", e.what()); return; }
+        settings = safe;
+        Message("Video settings restored", "The game starts borderless at your desktop resolution with the original aspect ratio.");
+    }
+    void MoveFolder(bool data, const fs::path& chosen = {}) {
+        fs::path selected = chosen;
+        if (selected.empty() && !ChooseFolder(selected, data ? "Choose an empty data folder" : "Choose an empty saves folder")) return;
+        std::string error;
+        if (!paths::ChangeFolders(data ? selected : data_folder, data ? save_folder : selected, error)) {
+            Message("Cannot move the folder", error);
+            return;
+        }
+        Message("Folder move scheduled", "Open OpenShao again to move your files to the new folder.", true);
+    }
+    void OpenSaves() {
+        const auto root = !options.save_dir.empty() ? fs::absolute(options.save_dir) :
+                          options.portable_saves ? app::ExeDir() / "hdd" : paths::SaveRoot() / "hdd";
+        std::error_code ec;
+        if (fs::is_directory(root, ec)) OpenLocation(files::Utf8(root));
+        else Message("No saves yet", "The game creates this folder the first time it saves:\n" + files::Utf8(root));
+    }
+    void SetCheckUpdates(bool enabled) {
+        try {
+            auto table = Disk();
+            auto launcher = table["launcher"].as_table() ? *table["launcher"].as_table() : toml::table{};
+            launcher.insert_or_assign("check_updates", enabled);
+            table.insert_or_assign("launcher", launcher);
+            std::string error;
+            if (!Write(paths::Config(), table, error)) throw std::runtime_error(error);
+            check_updates = enabled;
+            if (enabled && updater && updater->Get().state == update::State::Idle) updater->Check();
+        } catch (const std::exception& e) { Message("Cannot save the update preference", e.what()); }
+    }
+    void StartUpdate() {
+        if (!updater) return;
+        if (Busy()) { page = Page::Mods; Message("Mod operation in progress", "Wait for the mod operation to finish before updating."); return; }
+        updater->Download();
+    }
+
+    bool Animating() const {
+        if (reveal < 1.f) return true;
+        if (mods && mods->View().busy) return true;
+        if (preparing) return true;
+        if (updater) { const auto state = updater->Get().state; return state == update::State::Checking || state == update::State::Downloading; }
         return false;
     }
+};
+
+// ---------------------------------------------------------------- drawing
+using art::Canvas;
+using art::Rgb;
+using art::Weight;
+namespace color = art::color;
+
+struct Hit { bool hovered = false, clicked = false; };
+Hit Item(const char* id, const Canvas& c, float x0, float y0, float x1, float y1) {
+    ImGui::SetCursorScreenPos(c.P(x0, y0));
+    Hit hit;
+    hit.clicked = ImGui::InvisibleButton(id, ImVec2(std::max(1.f, c.S(x1 - x0)), std::max(1.f, c.S(y1 - y0))));
+    hit.hovered = ImGui::IsItemHovered();
+    if (hit.hovered) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+    return hit;
 }
-// the chosen action once the settings are saved or left as they are
-void Finish(Draft& d, Draft::Action action, bool saved) {
-    if (d.folders_saved) {
-        Fail(d, "Folders saved", "Reopen the launcher to move your files and use the new folders.");
-        d.close_after_message = true; return;
+bool Button(const char* id, const Canvas& c, float x0, float y0, float x1, float y1, const char* label, bool primary, bool enabled = true) {
+    ImGui::BeginDisabled(!enabled);
+    const auto hit = Item(id, c, x0, y0, x1, y1);
+    ImGui::EndDisabled();
+    const float alpha = enabled ? 1.f : 0.4f;
+    if (primary) c.Rect(x0, y0, x1, y1, Rgb(hit.hovered ? 0xE8826C : color::Ember, alpha), 9);
+    else {
+        if (hit.hovered) c.Rect(x0, y0, x1, y1, Rgb(color::Slate), 9);
+        c.Outline(x0, y0, x1, y1, Rgb(hit.hovered ? color::Dim : color::Line, alpha), 9);
     }
-    if (action == Draft::Action::Play && !options.configure_only) {
-        Apply(d.s, saved);
-        if (!d.source.empty()) { options.disc = d.source; options.game.clear(); options.register_disc = d.source_changed && ShouldPersist(); }
-        d.result = 1;
+    const auto size = c.Measure(Weight::SemiBold, 19, label);
+    c.Text(Weight::SemiBold, 19, (x0 + x1 - size.x) / 2, (y0 + y1 - size.y) / 2 - 0.5f, Rgb(primary ? color::Ink : color::Paper, alpha), label);
+    return hit.clicked;
+}
+bool Link(const char* id, const Canvas& c, float x, float y, const char* label, bool right_aligned = false, bool enabled = true) {
+    const auto size = c.Measure(Weight::Medium, 19, label);
+    const float x0 = right_aligned ? x - size.x : x;
+    ImGui::BeginDisabled(!enabled);
+    const auto hit = Item(id, c, x0, y - 2, x0 + size.x, y + size.y + 2);
+    ImGui::EndDisabled();
+    c.Text(Weight::Medium, 19, x0, y, Rgb(enabled ? (hit.hovered ? 0xF09A84 : color::Ember) : color::Dim), label);
+    return hit.clicked;
+}
+
+void TopBar(Session& s, const Canvas& c, float W) {
+    if (s.page == Page::Game) return;
+    const Page pages[] = {Page::Play, Page::Mods, Page::Files, Page::About};
+    const char* labels[] = {"Play", "Mods", "Files", "About"};
+    float x = W - 40;
+    float xs[4];
+    for (int i = 3; i >= 0; --i) { x -= c.Measure(Weight::Medium, 19, labels[i]).x; xs[i] = x; x -= 34; }
+    const bool updates = s.mods->View().updates;
+    for (int i = 0; i < 4; ++i) {
+        const float width = c.Measure(Weight::Medium, 19, labels[i]).x;
+        const auto hit = Item(labels[i], c, xs[i] - 8, 18, xs[i] + width + 8, 56);
+        if (hit.clicked) s.page = pages[i];
+        const bool active = s.page == pages[i];
+        c.Text(Weight::Medium, 19, xs[i], 28, Rgb(active || hit.hovered ? color::Paper : color::Mist), labels[i]);
+        if (active) art::BrushDash(c, xs[i] - 1, 50, width + 2);
+        if (pages[i] == Page::Mods && updates) c.list->AddCircleFilled(c.P(xs[i] + width + 6, 30), c.S(3), Rgb(color::Ember));
+    }
+}
+
+void PlayPage(Session& s, const Canvas& c, float W, float H) {
+    const float footer = H - 76;
+    const ImVec2 center{W / 2, 96 + (footer - 96) / 2};
+    const float R = std::clamp((footer - 130) * 0.40f, 90.f, 170.f);
+    const float stroke = R * 0.2f;
+    const auto view = s.updater ? s.updater->Get() : update::View{};
+    const bool updating = view.state == update::State::Downloading || view.state == update::State::Ready;
+    if (!updating) {
+        const auto hit = Item("##play", c, center.x - R, center.y - R, center.x + R, center.y + R);
+        if (hit.clicked) s.Play();
+        art::Glow(c, center, R, hit.hovered ? 1.45f : 1.f);
+        const float eased = 1.f - std::pow(1.f - std::clamp(s.reveal, 0.f, 1.f), 3.f);
+        art::Enso(c, center, R, stroke, eased, 1.f);
+        const char* label = options.configure_only ? "Close" : "Play";
+        const float label_h = c.Measure(Weight::Medium, 54, label).y;
+        c.TextCentered(Weight::Medium, 54, center.x + 4, center.y - label_h / 2 - 2, Rgb(color::Paper, hit.hovered ? 1.f : 0.94f), label);
     } else {
-        d.result = 0;
+        const float value = view.total ? float(double(view.done) / double(view.total)) : 0.f;
+        art::Enso(c, center, R, stroke, 1.f, 0.09f, 11, 44, false, color::Paper);
+        art::Enso(c, center, R, stroke, view.state == update::State::Ready ? 1.f : std::clamp(value, 0.f, 1.f), 1.f);
+        char percent[16];
+        std::snprintf(percent, sizeof percent, "%d%%", int(std::clamp(value, 0.f, 1.f) * 100.f));
+        c.TextCentered(Weight::Medium, 54, center.x + 4, center.y - 30, Rgb(color::Paper), view.state == update::State::Ready ? "100%" : percent);
+        c.TextCentered(Weight::Regular, 18.5f, center.x + 4, center.y + 22, Rgb(color::Mist), ("Updating to " + view.release.version).c_str());
     }
-}
-// Play, Close and the window's close button; Save and play saves first
-void Request(Draft& d, Draft::Action action, bool save) {
-    const bool closing = action == Draft::Action::Close || options.configure_only;
-    const auto view = d.mods->View();
-    if (!closing && view.busy && !view.checking) {
-        d.select_mods_tab = true;
-        Fail(d, "Mod operation in progress", "Wait for the mod operation to finish, or cancel it in the Mods tab."); return;
-    }
-    if (!closing && NeedsLanguagePack(d.s.language)) { OfferLanguagePack(d); return; }
-    const bool dirty = d.s != d.initial || d.source_changed || d.data_folder != paths::Root() || d.save_folder != paths::SaveRoot();
-    if (save) {
-        if (!Valid(d, d.s) || !Commit(d)) return;
-        Finish(d, action, true);
-        return;
-    }
-    if (dirty) { d.pending = action; d.popup = Draft::Popup::Unsaved; d.popup_opened = false; return; }
-    if (!closing && !Valid(d, d.s)) return;
-    Finish(d, action, true);
-}
-float g_label = 0;  // label column width
-void Row(const char* label) {
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted(label);
-    ImGui::SameLine(g_label);
-    ImGui::SetNextItemWidth(std::min(ImGui::GetContentRegionAvail().x, ImGui::GetFontSize() * 16));
-}
-void Note(const char* text) {
-    ImGui::Spacing();
-    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
-    ImGui::TextWrapped("%s", text);
-    ImGui::PopStyleColor();
-}
-bool Choice(const char* id, int& index, const std::vector<std::string>& names) {
-    bool changed = false;
-    const char* preview = index >= 0 && size_t(index) < names.size() ? names[size_t(index)].c_str() : "";
-    if (ImGui::BeginCombo(id, preview)) {
-        for (size_t i = 0; i < names.size(); ++i) {
-            const bool selected = int(i) == index;
-            if (ImGui::Selectable(names[i].c_str(), selected)) { index = int(i); changed = true; }
-            if (selected) ImGui::SetItemDefaultFocus();
+
+    c.Rule(40, W - 40, footer);
+    const float y = H - 50;
+    const bool ready = !s.source.empty();
+    c.list->AddCircleFilled(c.P(46, y + 9), c.S(4), Rgb(ready ? color::Moss : color::Warning));
+    const char* status = ready ? "Game ready" : "No game selected";
+    c.Text(Weight::Medium, 19, 60, y, Rgb(color::Paper), status);
+    const float detail_x = 60 + c.Measure(Weight::Medium, 19, status).x + 10;
+    if (!ready && Link("Choose game##footer", c, detail_x, y, "Choose game")) s.ChangeGame();
+
+    const float right = W - 40;
+    switch (view.state) {
+        case update::State::Available:
+            if (Button("Update##footer", c, right - 96, y - 10, right, y + 26, "Update", true)) s.StartUpdate();
+            c.TextRight(Weight::Regular, 19, right - 112, y, Rgb(color::Mist), ("Version " + view.release.version + " is available").c_str());
+            break;
+        case update::State::Downloading: {
+            if (Button("Cancel##update", c, right - 96, y - 10, right, y + 26, "Cancel", false)) s.updater->Cancel();
+            char progress[64];
+            std::snprintf(progress, sizeof progress, "%.1f of %.1f MB", double(view.done) / 1048576.0, double(view.total) / 1048576.0);
+            c.TextRight(Weight::Regular, 19, right - 112, y, Rgb(color::Mist), view.total ? progress : "Downloading");
+            break;
         }
-        ImGui::EndCombo();
-    }
-    return changed;
-}
-// one value of a list in the settings, shown by its name
-template <typename T>
-void Pick(const char* id, T& value, const std::vector<T>& values, const std::vector<std::string>& names) {
-    int index = int(std::find(values.begin(), values.end(), value) - values.begin());
-    if (Choice(id, index, names) && size_t(index) < values.size()) value = values[size_t(index)];
-}
-void Number(const char* id, int& value) { ImGui::InputInt(id, &value, 0, 0); }
-void Percent(const char* id, int& value, int low, int high) { ImGui::SliderInt(id, &value, low, high, "%d%%", ImGuiSliderFlags_AlwaysClamp); }
-void GeneralTab(Draft& d) {
-    Settings& s = d.s;
-    const auto previous_language = s.language;
-    Row("Game language"); Pick("##language", s.language, d.language_codes, d.language_names);
-    if (s.language != previous_language && NeedsLanguagePack(s.language)) OfferLanguagePack(d);
-    Row("Master volume"); Percent("##volume", s.master_volume, 0, 100);
-    ImGui::Checkbox("Show FPS and frame time (F9)", &s.show_fps);
-    ImGui::Spacing(); ImGui::SeparatorText("Original game options");
-    Note("The Original game tab can set music, effects, speech, brightness, versus rules, and camera control. You can also change them in the game's Options menu.");
-    Note("Language packs add translated text, voices, and movies. Original language audio depends on the files included with your copy.");
-}
-void VideoTab(Draft& d) {
-    Settings& s = d.s;
-    Row("Display mode"); Pick<std::string>("##mode", s.display_mode, {"fullscreen", "borderless", "windowed"}, {"Fullscreen", "Borderless", "Windowed"});
-    Row("Width (0 = desktop)"); Number("##width", s.width);
-    Row("Height (0 = desktop)"); Number("##height", s.height);
-    Row("Render scale (%)"); Number("##scale", s.render_percent);
-    Row("Anisotropic filtering"); Pick<int>("##aniso", s.aniso, {0, 2, 4, 8, 16}, {"Game default", "2x", "4x", "8x", "16x"});
-    ImGui::Checkbox("V-Sync", &s.vsync);
-}
-void ControlsTab(Draft& d) {
-    Settings& s = d.s;
-    int zone = int(s.deadzone * 100 + .5);
-    Row("Dead zone");
-    if (ImGui::SliderInt("##deadzone", &zone, 0, 50, "%d%%", ImGuiSliderFlags_AlwaysClamp) && zone != int(d.initial.deadzone * 100 + .5))
-        s.deadzone = zone / 100.;
-    else if (zone == int(d.initial.deadzone * 100 + .5)) s.deadzone = d.initial.deadzone;
-    ImGui::Checkbox("Vibration", &s.rumble);
-    ImGui::Spacing(); ImGui::SeparatorText("Controller buttons");
-    const char* labels[] = {"A", "B", "X", "Y", "Black / R1", "White / L1", "Start", "Back", "Left stick click", "Right stick click"};
-    const std::vector<std::string> buttons{"a", "b", "x", "y", "leftshoulder", "rightshoulder", "start", "back", "leftstick", "rightstick", "dpup", "dpdown", "dpleft", "dpright", "guide"};
-    if (ImGui::BeginTable("##buttons", 4, ImGuiTableFlags_SizingStretchProp)) {
-        for (int i = 0; i < 10; ++i) {
-            if (i % 2 == 0) ImGui::TableNextRow();
-            ImGui::TableNextColumn(); ImGui::AlignTextToFramePadding(); ImGui::TextUnformatted(labels[i]);
-            ImGui::TableNextColumn(); ImGui::SetNextItemWidth(-FLT_MIN);
-            std::vector<std::string> names = buttons;
-            if (std::find(names.begin(), names.end(), s.bindings[i]) == names.end()) names.push_back(s.bindings[i]);
-            ImGui::PushID(i); Pick("##button", s.bindings[i], names, names); ImGui::PopID();
+        case update::State::Ready:
+            c.TextRight(Weight::Regular, 19, right, y, Rgb(color::Mist), "Restarting");
+            break;
+        case update::State::Checking:
+            c.TextRight(Weight::Regular, 19, right, y, Rgb(color::Dim), "Checking for updates");
+            break;
+        case update::State::Current:
+            c.TextRight(Weight::Regular, 19, right, y, Rgb(color::Dim), ("Version " + std::string(mods::RecompVersion) + " is up to date").c_str());
+            break;
+        case update::State::Failed: {
+            const bool offered = !view.release.version.empty();
+            if (Link("Release page##update", c, right, y, "Release page", true))
+                OpenLocation(view.release.page.empty() ? update::kReleasesPage : view.release.page);
+            const float link = c.Measure(Weight::Medium, 19, "Release page").x;
+            if (offered && Link("Retry##update", c, right - link - 18, y, "Retry", true)) s.StartUpdate();
+            const float retry = offered ? c.Measure(Weight::Medium, 19, "Retry").x + 18 : 0.f;
+            c.TextRight(Weight::Regular, 19, right - link - retry - 18, y, Rgb(color::Warning),
+                        offered ? "The update could not be installed" : "Cannot check for updates");
+            if (ImGui::IsMouseHoveringRect(c.P(W / 2, y - 6), c.P(right, y + 24)) && !view.error.empty()) ImGui::SetTooltip("%s", view.error.c_str());
+            break;
         }
-        ImGui::EndTable();
+        default: break;
     }
-    Note("Keyboard: WASD, arrows, Space, Esc/Ctrl, J, K, Q, C, Shift, E, Enter, Backspace. Controller fields use SDL button names.");
 }
-void MouseTab(Draft& d) {
-    Settings& s = d.s;
-    Row("Mouse sensitivity"); Percent("##sensitivity", s.mouse.sensitivity, 1, 300);
-    ImGui::Checkbox("Invert vertical camera movement", &s.mouse.invert_y);
-    ImGui::Spacing(); ImGui::SeparatorText("Mouse buttons");
-    const char* labels[] = {"Left button", "Right button", "Middle button", "Side button 1", "Side button 2"};
-    const std::vector<std::string> actions(mouse::actions.begin(), mouse::actions.end());
-    const std::vector<std::string> names{"None", "A", "B", "X", "Y", "Black", "White", "Left trigger", "Right trigger", "Start", "Back", "Left stick click", "Right stick click"};
-    for (int i = 0; i < 5; ++i) { Row(labels[i]); ImGui::PushID(i); Pick("##action", s.mouse.bindings[i], actions, names); ImGui::PopID(); }
-    Note("Move the mouse to control the original camera. F10 releases or captures the pointer. Click inside the game to capture it again.");
+
+void Header(const Canvas& c, const char* title, const char* subtitle) {
+    c.Text(Weight::SemiBold, 36, 48, 104, Rgb(color::Paper), title);
+    c.Text(Weight::Regular, 20, 48, 148, Rgb(color::Mist), subtitle);
 }
-void OriginalTab(Draft& d) {
-    Settings& s = d.s;
-    ImGui::Checkbox("Apply these original game options at startup", &s.original_override);
-    ImGui::BeginDisabled(!s.original_override);
-    Row("Music volume"); Percent("##music", s.music_volume, 0, 100);
-    Row("Sound effects"); Percent("##effects", s.effects_volume, 0, 100);
-    Row("Speech volume"); Percent("##speech", s.speech_volume, 0, 100);
-    Row("Brightness"); Percent("##brightness", s.brightness, 0, 100);
-    Row("Versus rounds"); Pick<int>("##rounds", s.versus_rounds, {1, 3}, {"1", "3"});
-    Row("Versus match time"); Pick<int>("##time", s.versus_time, {120, 180, 0}, {"120 seconds", "180 seconds", "Unlimited"});
-    Row("Camera control"); Pick<bool>("##camera", s.camera_reverse, {false, true}, {"Normal", "Reverse"});
-    ImGui::EndDisabled();
-    Note("When disabled, the game keeps its own saved options. Brightness zero uses the original neutral adjustment.");
-}
-void FilesTab(Draft& d) {
-    ImGui::TextUnformatted("Game source");
-    const std::string source = d.source.empty() ? "No game selected" : Narrow(d.source.wstring());
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImGui::GetStyleColorVec4(ImGuiCol_FrameBg));
-    ImGui::BeginChild("##source", ImVec2(-FLT_MIN, ImGui::GetFrameHeight() * 2), ImGuiChildFlags_FrameStyle);
-    ImGui::TextWrapped("%s", source.c_str());
-    ImGui::EndChild();
-    ImGui::PopStyleColor();
-    if (ImGui::Button("Choose...")) {
-        fs::path selected;
-        if (setup::ChooseDisc(selected)) { d.source = selected; d.source_changed = true; }
-    }
-    ImGui::Spacing(); ImGui::SeparatorText("Folders");
-    if (ImGui::Button("Open saves")) {
-        std::string error;
-        const auto root = !options.save_dir.empty() ? fs::absolute(options.save_dir) : options.portable_saves ?
-            app::ExeDir() / "hdd" : paths::SaveRoot() / "hdd";
-        std::error_code ec;
-        if (fs::is_directory(root, ec)) linux_platform::OpenFolder(root);
-        else Fail(d, "Saves", "Save folder:\n" + Narrow(root.wstring()) + "\n\nThe game creates this folder when it starts.");
-    }
-    ImGui::SameLine(); if (ImGui::Button("Open logs")) linux_platform::OpenFolder(paths::Logs());
-    ImGui::SameLine(); if (ImGui::Button("Open configuration")) linux_platform::OpenFolder(paths::Root());
-    ImGui::Spacing();
-    ImGui::TextWrapped("Data folder: %s", Narrow(d.data_folder.wstring()).c_str());
-    const auto view = d.mods->View();
-    ImGui::BeginDisabled(paths::DataFolderOverridden() || view.busy);
-    if (ImGui::Button("Change data folder...")) {
-        fs::path selected;
-        if (linux_platform::ChooseFile(selected, true, "Choose an empty data folder")) d.data_folder = selected;
-    }
-    ImGui::EndDisabled();
-    ImGui::TextWrapped("Saves folder (contains hdd): %s", Narrow(d.save_folder.wstring()).c_str());
-    ImGui::BeginDisabled(paths::DataFolderOverridden() || view.busy || !options.save_dir.empty() || options.portable_saves);
-    if (ImGui::Button("Change saves folder...")) {
-        fs::path selected;
-        if (linux_platform::ChooseFile(selected, true, "Choose an empty saves folder")) d.save_folder = selected;
-    }
-    ImGui::EndDisabled();
-    Note("Folder changes move your files after you save, close and reopen the launcher. Command-line folder overrides take priority.");
-}
-fs::path ModGame(Draft& d) {
-    setup::Source source; std::vector<uint8_t> executable; std::string error;
-    if (d.source.empty() || !setup::PrepareGame(d.source, source, executable, error, true)) {
-        Fail(d, "Cannot install mod", error.empty() ? "Select your game in Files and support before installing mods." : error); return {};
-    }
-    if (source.path != d.source) { d.source = source.path; d.source_changed = true; }
-    return source.path;
-}
-void ModsTab(Draft& d) {
-    const auto view = d.mods->View();
-    ImGui::BeginDisabled(view.busy);
-    if (ImGui::Button("Check for updates")) d.mods->Refresh();
-    ImGui::SameLine();
-    if (ImGui::Button("Install from file...")) {
+
+void ModsPage(Session& s, const Canvas& c, float W, float H) {
+    const auto view = s.mods->View();
+    Header(c, "Mods", "Official OpenShao mods. Changes apply the next time you play.");
+    const float right = W - 48;
+    if (Link("Check for updates##mods", c, right, 112, "Check for updates", true, !view.busy)) s.mods->Refresh();
+    const float refresh = c.Measure(Weight::Medium, 19, "Check for updates").x;
+    if (Link("Install from file##mods", c, right - refresh - 28, 112, "Install from file", true, !view.busy)) {
         fs::path file;
-        if (linux_platform::ChooseFile(file, false, "Install a mod from file")) { const auto game = ModGame(d); if (!game.empty()) d.mods->InstallFile(file, game); }
+        if (ChooseModArchive(file)) s.InstallModFile(file);
     }
-    ImGui::EndDisabled();
-    if (view.busy) {
-        ImGui::SameLine(); if (ImGui::Button("Cancel operation")) { d.language_request = {}; d.mods->Cancel(); }
-        const float fraction = view.total ? float(double(view.done) / double(view.total)) : 0.f;
-        ImGui::ProgressBar(fraction, ImVec2(-FLT_MIN, 0));
+    float top = 200;
+    // Operation status: progress while busy, or the last error.
+    if (view.busy && !view.checking) {
+        c.Text(Weight::Medium, 18.5f, 48, 176, Rgb(color::Paper), view.status.c_str());
+        if (Link("Cancel##modop", c, right, 176, "Cancel", true)) s.mods->Cancel();
+        art::ProgressBar(c, 48, right, 196, view.total ? float(double(view.done) / double(view.total)) : 0.f);
+        top = 216;
+    } else if (!view.error.empty()) {
+        c.Text(Weight::Regular, 18.5f, 48, 176, Rgb(color::Warning), c.Fit(Weight::Regular, 18.5f, right - 48, view.error).c_str());
+        top = 208;
     }
-    ImGui::TextWrapped("%s", (view.error.empty() ? view.status : view.error).c_str());
+    c.Rule(48, right, top);
+
     const auto rows = mods::DisplayMods(view);
-    if (rows.empty()) Note("The catalog is unavailable or has no mods. You can install a local .tar.xz archive.");
+    ImGui::SetCursorScreenPos(c.P(0, top + 1));
+    ImGui::BeginChild("##mod-list", ImVec2(c.S(W), c.S(std::max(40.f, H - top - 24))), ImGuiChildFlags_None, ImGuiWindowFlags_NoBackground);
+    const Canvas list{ImGui::GetWindowDrawList(), c.scale, ImGui::GetCursorScreenPos()};
+    float y = 0;
     for (const auto& mod : rows) {
-        ImGui::PushID(mod.id.c_str()); ImGui::Spacing(); ImGui::SeparatorText(mod.name.c_str());
-        ImGui::TextWrapped("%s", mod.summary.c_str());
-        std::string authors = "Authors: "; for (const auto& a : mod.authors) authors += a + " ";
-        ImGui::TextWrapped("%s", authors.c_str());
+        ImGui::PushID(mod.id.c_str());
         const mods::Installed* installed = nullptr;
         for (const auto& i : view.installed) if (i.mod.id == mod.id) installed = &i;
-        const auto* version = mods::LatestCompatible(mod);
-        if (installed) ImGui::Text("Installed: %s (%s)", installed->mod.version.c_str(), installed->enabled ? "enabled" : "disabled");
-        if (version) ImGui::Text("Available: %s", version->version.c_str());
-        else Note(mod.unsupported_reason.empty()?"No compatible published version is available.":mod.unsupported_reason.c_str());
-        ImGui::BeginDisabled(view.busy);
-        if (!installed) {
-            ImGui::BeginDisabled(!version);
-            if (ImGui::Button("Install")) { const auto game = ModGame(d); if (!game.empty()) d.mods->Install(mod.id, game); }
+        const auto* release = mods::LatestCompatible(mod);
+        const bool update = installed && release && mods::CompareVersions(release->version, installed->mod.version) > 0;
+        const float text_x = 48 + 76, actions = installed ? 38 + 24 + (update ? 160 : 0) : 120;
+        const float wrap = right - text_x - actions - 24;
+        const float summary_h = list.Measure(Weight::Regular, 19, mod.summary.c_str(), wrap).y;
+        const float row_h = std::max(56.f + 44, 32 + summary_h + 28 + 44);
+        const float ty = y + 22;
+        list.Rect(48, ty, 104, ty + 56, Rgb(color::Slate), 12);
+        const float icon_alpha = installed && installed->enabled ? 1.f : 0.45f;
+        // A flag stays bright until its pack is installed and disabled.
+        if (!art::LanguageFlag(list, {76, ty + 28}, 38, mod.language, installed && !installed->enabled ? 0.45f : 1.f)) art::Enso(list, {76, ty + 28}, 15, 5, 1.f, icon_alpha, 7, 10);
+        list.Text(Weight::SemiBold, 22, text_x, ty + 2, Rgb(color::Paper), mod.name.c_str());
+        list.Text(Weight::Regular, 19, text_x, ty + 32, Rgb(color::Mist), mod.summary.c_str(), wrap);
+        std::string meta;
+        if (installed) meta = "Version " + installed->mod.version + (installed->enabled ? "" : ", disabled");
+        else meta = release ? "Version " + release->version + " available" : "Not available for this version";
+        if (!mod.authors.empty()) {
+            meta += ", by ";
+            for (size_t i = 0; i < mod.authors.size(); ++i) meta += (i ? " and " : "") + mod.authors[i];
+        }
+        if (!mod.unsupported_reason.empty()) meta = mod.unsupported_reason;
+        const float meta_y = ty + 32 + summary_h + 6;
+        list.Text(Weight::Regular, 18, text_x, meta_y, Rgb(mod.unsupported_reason.empty() ? color::Dim : color::Warning), meta.c_str());
+        if (installed) {
+            const float meta_w = list.Measure(Weight::Regular, 18, meta.c_str()).x;
+            const float remove_x = text_x + meta_w + 14;
+            ImGui::BeginDisabled(view.busy);
+            const auto remove = Item("##remove", list, remove_x, meta_y - 1, remove_x + list.Measure(Weight::Medium, 18, "Remove").x, meta_y + 17);
             ImGui::EndDisabled();
+            list.Text(Weight::Medium, 18, remove_x, meta_y, Rgb(remove.hovered ? color::Paper : color::Mist, view.busy ? 0.5f : 1.f), "Remove");
+            if (remove.clicked) s.RemoveMod(mod);
+            ImGui::BeginDisabled(view.busy);
+            const auto toggle = Item("##toggle", list, right - 38, ty + 6, right, ty + 28);
+            ImGui::EndDisabled();
+            art::Toggle(list, right - 38, ty + 6, installed->enabled, toggle.hovered);
+            if (toggle.clicked) s.ToggleMod(mod.id);
+            if (update) {
+                const std::string label = "Update to " + release->version;
+                if (Button("##update", list, right - 38 - 24 - 148, ty, right - 38 - 24, ty + 34, label.c_str(), false, !view.busy)) s.InstallMod(mod.id);
+            }
+        } else if (Button("##install", list, right - 96, ty, right, ty + 34, "Install", true, release && !view.busy && mod.unsupported_reason.empty())) {
+            s.InstallMod(mod.id);
+        }
+        y += row_h;
+        list.Rule(48, right, y);
+        ImGui::PopID();
+    }
+    const char* empty = rows.empty() ? "The catalog is unavailable right now. You can install a downloaded .tar.xz package with Install from file."
+                                     : "New official mods appear here when they are published.";
+    list.Text(Weight::Regular, 18.5f, 48, y + 24, Rgb(color::Dim), empty, right - 48);
+    ImGui::SetCursorScreenPos(list.P(0, y + 64));
+    ImGui::Dummy(ImVec2(1, 1));
+    ImGui::EndChild();
+}
+
+void FilesPage(Session& s, const Canvas& c, float W, float) {
+    Header(c, "Files", "Where OpenShao finds your game and keeps your saves.");
+    const float right = W - 48, label_x = 48, value_x = 170;
+    const bool busy = s.mods->View().busy;
+    const bool locked = paths::DataFolderOverridden() || busy;
+    const bool saves_locked = locked || !options.save_dir.empty() || options.portable_saves;
+    float y = 200;
+    auto row = [&](const char* label, const std::string& value, int buttons) {
+        c.Rule(48, right, y);
+        c.Text(Weight::SemiBold, 20, label_x, y + 25, Rgb(color::Paper), label);
+        const float width = right - value_x - float(buttons) * 96 - 16;
+        c.Text(Weight::Regular, 19, value_x, y + 25, Rgb(color::Mist), c.Fit(Weight::Regular, 19, width, value).c_str());
+    };
+    row("Game", s.source.empty() ? std::string("No game selected") : files::Utf8(s.source), 1);
+    if (Button("Change##game", c, right - 84, y + 16, right, y + 50, "Change", false, !busy)) s.ChangeGame();
+    y += 66;
+    row("Saves", files::Utf8(s.save_folder), 2);
+    if (Button("Move##saves", c, right - 84, y + 16, right, y + 50, "Move", false, !saves_locked)) s.MoveFolder(false);
+    if (Button("Open##saves", c, right - 180, y + 16, right - 96, y + 50, "Open", false)) s.OpenSaves();
+    y += 66;
+    row("Data", files::Utf8(s.data_folder), 2);
+    if (Button("Move##data", c, right - 84, y + 16, right, y + 50, "Move", false, !locked)) s.MoveFolder(true);
+    if (Button("Open##data", c, right - 180, y + 16, right - 96, y + 50, "Open", false)) OpenLocation(files::Utf8(paths::Root()));
+    y += 66;
+    row("Logs", "Include the latest log when you report a problem.", 1);
+    if (Button("Open##logs", c, right - 84, y + 16, right, y + 50, "Open", false)) OpenLocation(files::Utf8(paths::Logs()));
+    y += 66;
+    row("Video", "Restore the display settings if the game does not start correctly.", 1);
+    if (Button("Restore##video", c, right - 84, y + 16, right, y + 50, "Restore", false)) s.RestoreVideo();
+    y += 66;
+    c.Rule(48, right, y);
+    c.Text(Weight::SemiBold, 20, label_x, y + 25, Rgb(color::Paper), "Updates");
+    c.Text(Weight::Regular, 19, value_x, y + 25, Rgb(color::Mist), "Check for a new version when the launcher opens");
+    const auto toggle = Item("##check-updates", c, right - 38, y + 22, right, y + 44);
+    art::Toggle(c, right - 38, y + 22, s.check_updates, toggle.hovered);
+    if (toggle.clicked) s.SetCheckUpdates(!s.check_updates);
+}
+
+void AboutPage(Session&, const Canvas& c, float W, float) {
+    Header(c, "About", ("Version " + std::string(mods::RecompVersion)).c_str());
+    const float right = W - 48, wrap = std::min(720.f, right - 48);
+    if (Link("Licenses##about", c, right, 112, "Licenses", true)) OpenLocation(files::Utf8(app::ExeDir() / "licenses"));
+    const float licenses = c.Measure(Weight::Medium, 19, "Licenses").x;
+    if (Link("Project page##about", c, right - licenses - 28, 112, "Project page", true)) OpenLocation("https://github.com/OAleex/OpenShao");
+    c.Rule(48, right, 200);
+    struct Paragraph { Weight weight; float size; uint32_t rgb; const char* text; };
+    const Paragraph paragraphs[] = {
+        {Weight::Regular, 20, color::Paper, "OpenShao runs Mortal Kombat: Shaolin Monks natively on PC through static recompilation of "
+                                            "the original Xbox game. It includes no game files: you play with your own copy."},
+        {Weight::Regular, 19, color::Mist, "OpenShao is free software under the GNU General Public License, version 2 or later. The "
+                                           "license does not cover the original game's code, assets, names or artwork. It is built "
+                                           "with the components below. Their full license texts are in the licenses folder of every "
+                                           "release and of the project repository."},
+    };
+    float y = 224;
+    for (const auto& paragraph : paragraphs) {
+        c.Text(paragraph.weight, paragraph.size, 48, y, Rgb(paragraph.rgb), paragraph.text, wrap);
+        y += c.Measure(paragraph.weight, paragraph.size, paragraph.text, wrap).y + 16;
+    }
+    // Keep this list in step with licenses/ and the package contents.
+    struct Component { const char* name; const char* license; };
+    static constexpr Component components[] = {
+        {"XboxXBERecomp", "MIT"}, {"SDL 3", "zlib"}, {"Dear ImGui", "MIT"}, {"toml++", "MIT"},
+        {"Lua 5.4", "MIT"}, {"miniz", "MIT"}, {"XZ Embedded", "0BSD"}, {"Vulkan-Headers", "Apache-2.0 or MIT"},
+        {"glslang", "BSD-3-Clause and others"}, {"Hanken Grotesk", "SIL Open Font License 1.1"},
+        {"Keyboard input integration", "GPL-2.0-or-later"},
+    };
+    constexpr int count = int(sizeof(components) / sizeof(components[0]));
+    const int rows = (count + 1) / 2;
+    const float column = (right - 48) / 2;
+    float name_w[2] = {};
+    for (int i = 0; i < count; ++i) name_w[i / rows] = std::max(name_w[i / rows], c.Measure(Weight::Medium, 18, components[i].name).x);
+    y += 6;
+    for (int i = 0; i < count; ++i) {
+        const int side = i / rows;
+        const float x = 48 + float(side) * column, row_y = y + float(i % rows) * 30;
+        c.Text(Weight::Medium, 18, x, row_y, Rgb(color::Paper), components[i].name);
+        c.Text(Weight::Regular, 18, x + name_w[side] + 24, row_y, Rgb(color::Mist),
+               c.Fit(Weight::Regular, 18, column - name_w[side] - 48, components[i].license).c_str());
+    }
+}
+
+void PopupOverlay(Session& s, const Canvas& c, float W, float H) {
+    if (!s.popup) return;
+    c.Rect(0, 0, W, H, Rgb(0x15171A, 0.62f));
+    const float width = 440;
+    const float x0 = (W - width) / 2;
+    const float title_h = c.Measure(Weight::SemiBold, 22, s.popup->title.c_str(), width - 56).y;
+    const float text_h = c.Measure(Weight::Regular, 19, s.popup->text.c_str(), width - 56).y;
+    const float height = 28 + title_h + 14 + text_h + 28 + 36 + 24;
+    const float y0 = (H - height) / 2;
+    c.Rect(x0, y0, x0 + width, y0 + height, Rgb(color::Slate), 14);
+    c.Outline(x0, y0, x0 + width, y0 + height, Rgb(color::Line), 14);
+    c.Text(Weight::SemiBold, 22, x0 + 28, y0 + 28, Rgb(color::Paper), s.popup->title.c_str(), width - 56);
+    c.Text(Weight::Regular, 19, x0 + 28, y0 + 28 + title_h + 14, Rgb(color::Mist), s.popup->text.c_str(), width - 56);
+    const float by = y0 + height - 24 - 36, bx = x0 + width - 28;
+    if (s.popup->confirm.empty()) {
+        if (Button("OK##popup", c, bx - 96, by, bx, by + 36, "OK", true)) s.Dismiss();
+    } else {
+        const float confirm_w = std::max(96.f, c.Measure(Weight::SemiBold, 19, s.popup->confirm.c_str()).x + 36);
+        if (Button("Confirm##popup", c, bx - confirm_w, by, bx, by + 36, s.popup->confirm.c_str(), true)) s.Accept();
+        else if (Button("Cancel##popup", c, bx - confirm_w - 12 - 96, by, bx - confirm_w - 12, by + 36, "Cancel", false)) s.Dismiss();
+    }
+}
+
+void GamePage(Session& s, const Canvas& c, float W, float H) {
+    const float right = W - 48;
+    Header(c, s.game_required ? "Choose your game" : "Change game", "Use your own copy of the original USA/Europe Xbox release.");
+    if (!s.game_required && Link("Back##game", c, right, 112, "Back", true, !s.preparing)) s.LeaveGame();
+    float y = 200;
+    if (!s.game_error.empty()) {
+        c.Text(Weight::Regular, 18.5f, 48, 172, Rgb(color::Warning), c.Fit(Weight::Regular, 18.5f, right - 48, s.game_error).c_str());
+        y = 208;
+    }
+    if (s.preparing) {
+        // Disc images and folders are checked in moments; ZIP imports report their progress.
+        const bool importing = s.preparing->Importing();
+        c.Rule(48, right, y);
+        const char* status = s.preparing->Cancelling() ? "Cancelling..." : importing ? "Importing your game files..." : "Checking your game...";
+        c.Text(Weight::Medium, 20, 48, y + 30, Rgb(color::Paper), status);
+        if (importing && !s.preparing->Cancelling() && Link("Cancel##gameimport", c, right, y + 30, "Cancel", true)) s.preparing->Cancel();
+        art::ProgressBar(c, 48, right, y + 70, importing ? s.preparing->Progress() : 0.f);
+        return;
+    }
+    struct Choice { const char* id; const char* title; const char* text; const char* action; bool folder; };
+    const Choice choices[] = {
+        {"##game-file", "Game file", "An ISO, XISO or ZIP image, or default.xbe. ZIP files are imported into your data folder.", "Choose file", false},
+        {"##game-folder", "Extracted folder", "The complete folder that contains default.xbe. OpenShao reads it in place.", "Choose folder", true},
+    };
+    for (const auto& choice : choices) {
+        c.Rule(48, right, y);
+        const float row_h = 104;
+        const auto hit = Item(choice.id, c, 48, y + 1, right, y + row_h);
+        if (hit.hovered) c.Rect(36, y + 8, right + 12, y + row_h - 8, Rgb(color::Slate, 0.7f), 12);
+        if (hit.clicked) s.ChooseGame(choice.folder);
+        c.Rect(48, y + 24, 104, y + 80, Rgb(color::Slate), 12);
+        const ImU32 ink = Rgb(color::Ember, hit.hovered ? 1.f : 0.85f);
+        if (choice.folder) {
+            // A folder: tab and body.
+            c.Rect(62, y + 39, 76, y + 46, ink, 2);
+            c.Rect(62, y + 43, 90, y + 64, ink, 3);
         } else {
-            if (ImGui::Button(installed->enabled ? "Disable" : "Enable")) d.mods->Enable(mod.id, !installed->enabled);
-            ImGui::SameLine(); if (ImGui::Button("Uninstall")) { d.remove_id = mod.id; d.message = "Uninstall " + mod.name + "?"; d.popup = Draft::Popup::RemoveMod; d.popup_opened = false; }
-            ImGui::SameLine(); ImGui::BeginDisabled(!version || mods::CompareVersions(version->version, installed->mod.version) <= 0);
-            if (ImGui::Button("Update")) { const auto game = ModGame(d); if (!game.empty()) d.mods->Install(mod.id, game); }
-            ImGui::EndDisabled();
+            // A disc with its centre hole.
+            c.list->AddCircleFilled(c.P(76, y + 52), c.S(16), ink, 40);
+            c.list->AddCircleFilled(c.P(76, y + 52), c.S(4.5f), Rgb(color::Slate), 24);
+            c.list->AddCircle(c.P(76, y + 52), c.S(9), Rgb(color::Slate, 0.35f), 32, c.S(1));
         }
-        ImGui::EndDisabled(); ImGui::PopID();
+        const float text_x = 124, button_w = c.Measure(Weight::SemiBold, 19, choice.action).x + 40;
+        c.Text(Weight::SemiBold, 22, text_x, y + 24, Rgb(color::Paper), choice.title);
+        c.Text(Weight::Regular, 19, text_x, y + 56, Rgb(color::Mist), c.Fit(Weight::Regular, 19, right - text_x - button_w - 24, choice.text).c_str());
+        // The game file is the usual choice; the folder button is secondary.
+        const float by = y + (row_h - 38) / 2;
+        if (!choice.folder) c.Rect(right - button_w, by, right, by + 38, Rgb(hit.hovered ? 0xE8826C : color::Ember), 9);
+        else c.Outline(right - button_w, by, right, by + 38, Rgb(hit.hovered ? color::Dim : color::Line), 9);
+        const auto label = c.Measure(Weight::SemiBold, 19, choice.action);
+        c.Text(Weight::SemiBold, 19, right - button_w + (button_w - label.x) / 2, by + (38 - label.y) / 2 - 0.5f,
+               Rgb(choice.folder ? color::Paper : color::Ink), choice.action);
+        y += row_h;
     }
+    c.Rule(48, right, y);
+    (void)H;
 }
-void Popups(Draft& d) {
-    const ImVec2 center = ImGui::GetMainViewport()->GetCenter();
-    const float width = ImGui::GetFontSize() * 24;
-    if (d.popup == Draft::Popup::Unsaved) {
-        if (!d.popup_opened) { ImGui::OpenPopup("Unsaved settings"); d.popup_opened = true; }
-        ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(.5f, .5f));
-        ImGui::SetNextWindowSize(ImVec2(width, 0));
-        if (ImGui::BeginPopupModal("Unsaved settings", nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove)) {
-            const bool closing = d.pending == Draft::Action::Close || options.configure_only;
-            ImGui::TextWrapped("%s", closing ? "Save your changes before closing?" : "Save your changes before starting the game?");
-            ImGui::Spacing();
-            const auto action = d.pending;
-            if (ImGui::Button("Save")) {
-                ImGui::CloseCurrentPopup(); d.popup = Draft::Popup::None;
-                if (closing || Valid(d, d.s)) if (Commit(d)) Finish(d, action, true);
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("Don't save")) {
-                ImGui::CloseCurrentPopup(); d.popup = Draft::Popup::None;
-                if (closing || Valid(d, d.s)) Finish(d, action, false);
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("Cancel") || ImGui::IsKeyPressed(ImGuiKey_Escape)) { ImGui::CloseCurrentPopup(); d.popup = Draft::Popup::None; }
-            ImGui::EndPopup();
-        }
-    } else if (d.popup == Draft::Popup::LanguagePack) {
-        if (!d.popup_opened) { ImGui::OpenPopup("LanguagePack required"); d.popup_opened = true; }
-        ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(.5f, .5f));
-        ImGui::SetNextWindowSize(ImVec2(width, 0));
-        if (ImGui::BeginPopupModal("LanguagePack required", nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove)) {
-            ImGui::TextWrapped("%s", d.message.c_str());
-            if (ImGui::Button("Yes")) {
-                d.language_request={d.s.language,false}; d.select_mods_tab = true;
-                ImGui::CloseCurrentPopup(); d.popup = Draft::Popup::None;
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("No") || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
-                ImGui::CloseCurrentPopup(); d.popup = Draft::Popup::None;
-            }
-            ImGui::EndPopup();
-        }
-    } else if (d.popup == Draft::Popup::RemoveMod) {
-        if (!d.popup_opened) { ImGui::OpenPopup("Confirm mod operation"); d.popup_opened = true; }
-        ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(.5f, .5f));
-        ImGui::SetNextWindowSize(ImVec2(width, 0));
-        if (ImGui::BeginPopupModal("Confirm mod operation", nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove)) {
-            ImGui::TextWrapped("%s", d.message.c_str());
-            if (ImGui::Button("Uninstall")) {
-                ImGui::CloseCurrentPopup(); d.popup = Draft::Popup::None;
-                d.mods->Remove(d.remove_id);
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("Cancel")) { ImGui::CloseCurrentPopup(); d.popup = Draft::Popup::None; }
-            ImGui::EndPopup();
-        }
-    } else if (d.popup == Draft::Popup::Error) {
-        if (!d.popup_opened) { ImGui::OpenPopup("##message"); d.popup_opened = true; }
-        ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(.5f, .5f));
-        ImGui::SetNextWindowSize(ImVec2(width, 0));
-        if (ImGui::BeginPopupModal("##message", nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoTitleBar)) {
-            ImGui::TextUnformatted(d.message_title.c_str());
-            ImGui::Separator();
-            ImGui::TextWrapped("%s", d.message.c_str());
-            ImGui::Spacing();
-            if (ImGui::Button("OK") || ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
-                ImGui::CloseCurrentPopup(); d.popup = Draft::Popup::None;
-                if (d.close_after_message) d.result = 0;
-            }
-            ImGui::EndPopup();
-        }
-    }
-}
-void Frame(Draft& d) {
-    ContinueLanguageInstall(*d.mods, d.language_request, [&] { return ModGame(d); });
-    const auto view = d.mods->View();
-    if(d.language_revision!=view.revision) {
-        d.language_codes.clear();d.language_names.clear();d.language_revision=view.revision;
-        for(const auto& choice:mods::LanguageChoices(view,d.s.language)) {
-            d.language_codes.push_back(choice.code);d.language_names.push_back(choice.name);
-        }
-    }
+
+void Draw(Session& s, float scale) {
+    s.PollGame();
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    const float W = viewport->Size.x / scale, H = viewport->Size.y / scale;
     ImGui::SetNextWindowPos(viewport->Pos);
     ImGui::SetNextWindowSize(viewport->Size);
     ImGui::Begin("##launcher", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
-                                        ImGuiWindowFlags_NoBringToFrontOnFocus);
-    g_label = ImGui::GetFontSize() * 13;
-    ImGui::SetWindowFontScale(1.35f);
-    ImGui::TextUnformatted("Shaolin Monks Recomp");
-    ImGui::SetWindowFontScale(1.0f);
-    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
-    ImGui::TextUnformatted(options.configure_only ? "Settings" : "Settings before you play");
-    ImGui::PopStyleColor();
-    if (view.updates) ImGui::TextUnformatted("Mod updates are available. Open the Mods tab.");
-    ImGui::Spacing();
-    const float bar = ImGui::GetFrameHeightWithSpacing() + ImGui::GetStyle().ItemSpacing.y * 2;
-    ImGui::BeginChild("##pages", ImVec2(0, -bar));
-    if (ImGui::BeginTabBar("##tabs")) {
-        struct Page { const char* name; void (*draw)(Draft&); };
-        const Page pages[] = {{"General", GeneralTab}, {"Video", VideoTab}, {"Controls", ControlsTab},
-                              {"Mouse", MouseTab}, {"Original game", OriginalTab}, {"Files and support", FilesTab}, {"Mods", ModsTab}};
-        for (const auto& page : pages) {
-            const bool select = d.select_mods_tab && page.draw == ModsTab;
-            if (ImGui::BeginTabItem(page.name, nullptr, select ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None)) {
-                if (select) d.select_mods_tab = false;
-                ImGui::Spacing();
-                page.draw(d);
-                ImGui::EndTabItem();
-            }
-        }
-        ImGui::EndTabBar();
+                                        ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBackground);
+    const Canvas c{ImGui::GetWindowDrawList(), scale, viewport->Pos};
+    const float footer = H - 76;
+    art::Background(c, W, H, s.page == Page::Play ? ImVec2(W / 2, 96 + (footer - 96) / 2) : ImVec2(W / 2, -80));
+    const bool modal = s.popup.has_value();
+    ImGui::BeginDisabled(modal);
+    TopBar(s, c, W);
+    switch (s.page) {
+        case Page::Play: PlayPage(s, c, W, H); break;
+        case Page::Mods: ModsPage(s, c, W, H); break;
+        case Page::Files: FilesPage(s, c, W, H); break;
+        case Page::About: AboutPage(s, c, W, H); break;
+        case Page::Game: GamePage(s, c, W, H); break;
     }
-    ImGui::EndChild();
-    ImGui::Separator();
-    ImGui::Spacing();
-    if (ImGui::Button("Defaults")) d.s = Settings{};
-    const char* play = options.configure_only ? "Close" : "Play";
-    const char* save = options.configure_only ? "Save and close" : "Save and play";
-    const ImGuiStyle& style = ImGui::GetStyle();
-    const float play_w = ImGui::CalcTextSize(play).x + style.FramePadding.x * 2;
-    const float save_w = ImGui::CalcTextSize(save).x + style.FramePadding.x * 2;
-    ImGui::SameLine(ImGui::GetContentRegionMax().x - play_w - save_w - style.ItemSpacing.x);
-    if (ImGui::Button(play)) Request(d, options.configure_only ? Draft::Action::Close : Draft::Action::Play, false);
-    ImGui::SameLine();
-    ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
-    if (ImGui::Button(save)) Request(d, options.configure_only ? Draft::Action::Close : Draft::Action::Play, true);
-    ImGui::PopStyleColor();
-    Popups(d);
+    ImGui::EndDisabled();
     ImGui::End();
-}
-// the saved settings as they are, when no window can open
-bool PlayWithSavedSettings() {
-    Settings settings;
-    try { settings = Read(Disk()); }
-    catch (const std::exception& e) { paths::ReportError(L"Cannot read settings.toml.\n" + Wide(e.what())); return false; }
-    std::string error;
-    if (!Validate(settings, error)) { paths::ReportError(L"Check settings.toml: " + Wide(error)); return false; }
-    if (NeedsLanguagePack(settings.language)) {
-        paths::ReportError(L"Install and enable a pack for the selected language in Mods, or select another language.");
-        return false;
+    // The popup has its own window, above the page and its scrolling list.
+    if (modal) {
+        ImGui::SetNextWindowPos(viewport->Pos);
+        ImGui::SetNextWindowSize(viewport->Size);
+        ImGui::SetNextWindowFocus();
+        ImGui::Begin("##popup", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
+                                         ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBackground);
+        PopupOverlay(s, Canvas{ImGui::GetWindowDrawList(), scale, viewport->Pos}, W, H);
+        ImGui::End();
     }
-    Apply(settings, true);
-    if (options.configure_only) {
-        std::printf("Settings: %s\n", Narrow(paths::Config().wstring()).c_str());
-        return false;
+
+    const ImGuiIO& io = ImGui::GetIO();
+    s.reveal = std::min(1.f, s.reveal + io.DeltaTime / 0.9f);
+    if (modal && s.popup) {
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) s.Dismiss();
+        else if (ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false)) {
+            if (s.popup->confirm.empty()) s.Dismiss(); else s.Accept();
+        }
+    } else if (!modal && !io.NavVisible) {
+        if (s.page == Page::Play && (ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false))) s.Play();
+        else if (s.page == Page::Game && ImGui::IsKeyPressed(ImGuiKey_Escape, false)) s.LeaveGame();
+        else if (s.page != Page::Play && s.page != Page::Game && ImGui::IsKeyPressed(ImGuiKey_Escape, false)) s.page = Page::Play;
     }
-    return true;
+}
+
+// ---------------------------------------------------------------- controller shortcuts
+// A, B and the shoulder buttons work in the launcher. The game configures controllers again when it starts.
+class Gamepads {
+public:
+    Gamepads() { active_ = SDL_InitSubSystem(SDL_INIT_GAMEPAD); }
+    ~Gamepads() {
+        for (auto* pad : pads_) SDL_CloseGamepad(pad);
+        if (active_) SDL_QuitSubSystem(SDL_INIT_GAMEPAD);
+    }
+    void Poll(Session& s) {
+        if (!active_) return;
+        SDL_UpdateGamepads();
+        int count = 0;
+        if (SDL_JoystickID* ids = SDL_GetGamepads(&count)) {
+            for (int i = 0; i < count; ++i)
+                if (std::none_of(pads_.begin(), pads_.end(), [&](SDL_Gamepad* pad) { return SDL_GetGamepadID(pad) == ids[i]; }))
+                    if (SDL_Gamepad* pad = SDL_OpenGamepad(ids[i])) pads_.push_back(pad);
+            SDL_free(ids);
+        }
+        bool down[4] = {};
+        const SDL_GamepadButton buttons[4] = {SDL_GAMEPAD_BUTTON_SOUTH, SDL_GAMEPAD_BUTTON_EAST, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER};
+        for (auto* pad : pads_)
+            for (int b = 0; b < 4; ++b) down[b] |= SDL_GetGamepadButton(pad, buttons[b]);
+        bool pressed[4];
+        for (int b = 0; b < 4; ++b) { pressed[b] = down[b] && !previous_[b]; previous_[b] = down[b]; }
+        if (s.popup) {
+            if (pressed[0]) { if (s.popup->confirm.empty()) s.Dismiss(); else s.Accept(); }
+            else if (pressed[1]) s.Dismiss();
+            return;
+        }
+        if (s.page == Page::Game) {
+            if (pressed[0]) s.ChooseGame(false);
+            if (pressed[1]) s.LeaveGame();
+            return;
+        }
+        if (pressed[0] && s.page == Page::Play) s.Play();
+        if (pressed[1]) s.page = Page::Play;
+        if (pressed[2] || pressed[3]) s.page = Page((int(s.page) + (pressed[3] ? 1 : 3)) % 4);
+    }
+private:
+    bool active_ = false;
+    std::vector<SDL_Gamepad*> pads_;
+    bool previous_[4] = {};
+};
+
+// ---------------------------------------------------------------- automated checks
+// --launcher-test runs the launcher without a window. Tests append commands to commands.txt
+// and read state.json, which reflects every frame.
+class Automation {
+public:
+    explicit Automation(fs::path folder) : folder_(std::move(folder)) { fs::create_directories(folder_); }
+    void Run(Session& s) {
+        std::ifstream file(folder_ / "commands.txt", std::ios::binary);
+        if (!file) return;
+        file.seekg(std::streamoff(offset_));
+        std::string line;
+        while (std::getline(file, line)) {
+            if (file.eof()) break;  // an unfinished line is read again next frame
+            offset_ += line.size() + 1;
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            Execute(s, line);
+        }
+    }
+    void Publish(const Session& s) {
+        std::ostringstream out;
+        const auto view = s.mods->View();
+        out << "{\"page\":\"" << PageName(s.page) << "\",\"result\":" << s.result << ",\"source\":\"" << Escape(files::Utf8(s.source))
+            << "\",\"popup\":";
+        if (s.popup) out << "{\"title\":\"" << Escape(s.popup->title) << "\",\"text\":\"" << Escape(s.popup->text) << "\"}";
+        else out << "null";
+        out << ",\"mods_busy\":" << (view.busy ? "true" : "false") << ",\"mods_error\":\"" << Escape(view.error) << "\",\"mods\":[";
+        bool first = true;
+        for (const auto& mod : mods::DisplayMods(view)) {
+            const mods::Installed* installed = nullptr;
+            for (const auto& i : view.installed) if (i.mod.id == mod.id) installed = &i;
+            out << (first ? "" : ",") << "{\"id\":\"" << Escape(mod.id) << "\",\"installed\":" << (installed ? "true" : "false")
+                << ",\"enabled\":" << (installed && installed->enabled ? "true" : "false") << "}";
+            first = false;
+        }
+        out << "],\"check_updates\":" << (s.check_updates ? "true" : "false") << ",\"game_busy\":" << (s.preparing ? "true" : "false")
+            << ",\"game_error\":\"" << Escape(s.game_error) << "\"}";
+        const auto text = out.str();
+        if (text == last_) return;
+        // A test that is reading the file can block the replacement; the next frame tries again.
+        try { files::AtomicWrite(folder_ / "state.json", text); last_ = text; }
+        catch (const std::exception&) {}
+    }
+private:
+    static std::string Escape(const std::string& text) {
+        std::string out;
+        for (const char ch : text) {
+            if (ch == '"' || ch == '\\') { out += '\\'; out += ch; }
+            else if (ch == '\n') out += "\\n";
+            else if (static_cast<unsigned char>(ch) < 32) out += ' ';
+            else out += ch;
+        }
+        return out;
+    }
+    void Execute(Session& s, const std::string& line) {
+        const auto space = line.find(' ');
+        const auto command = line.substr(0, space);
+        const auto argument = space == line.npos ? std::string{} : line.substr(space + 1);
+        LOGI("launcher test: %s", line.c_str());
+        if (command == "page") {
+            // The tabs are hidden while a game is required.
+            if (!s.game_required)
+                for (Page page : {Page::Play, Page::Mods, Page::Files, Page::About}) if (argument == PageName(page)) s.page = page;
+        }
+        else if (command == "play") s.Play();
+        else if (command == "close") s.Close();
+        else if (command == "confirm") s.Accept();
+        else if (command == "dismiss") s.Dismiss();
+        else if (command == "choose-game") s.ChangeGame(argument.empty() ? fs::path{} : files::FromUtf8(argument));
+        else if (command == "game-back") s.LeaveGame();
+        else if (command == "restore-video") s.RestoreVideo();
+        else if (command == "check-updates") s.SetCheckUpdates(argument == "on");
+        else if (command == "mods-refresh") s.mods->Refresh();
+        else if (command == "mod-install") s.InstallMod(argument);
+        else if (command == "mod-install-file") s.InstallModFile(files::FromUtf8(argument));
+        else if (command == "mod-toggle") s.ToggleMod(argument);
+        else if (command == "mod-remove") {
+            for (const auto& mod : mods::DisplayMods(s.mods->View())) if (mod.id == argument) s.RemoveMod(mod);
+        }
+        else LOGE("launcher test: unknown command %s", line.c_str());
+    }
+    fs::path folder_;
+    size_t offset_ = 0;
+    std::string last_;
+};
+
+bool CheckUpdatesEnabled() {
+    try { return Disk()["launcher"]["check_updates"].value_or(true); } catch (...) { return true; }
+}
+
+// Runs the launcher without a window for --launcher-test.
+bool RunAutomated(Session& s) {
+    s.mods = std::make_unique<mods::Browser>(paths::Mods());
+    if (!paths::MoveWarning().empty()) s.Message("Folder move", paths::MoveWarning());
+    Automation automation(options.launcher_test);
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO();
+    io.IniFilename = nullptr;
+    io.DisplaySize = ImVec2(1040, 640);
+    // The real renderers accept large meshes; the brush enso needs more than 64K vertices.
+    io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset;
+    art::Prepare(1.f);
+    unsigned char* pixels = nullptr;
+    int width = 0, height = 0;
+    io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
+    s.reveal = 1.f;
+    while (s.result < 0) {
+        io.DeltaTime = 1.f / 60.f;
+        ImGui::NewFrame();
+        automation.Run(s);
+        Draw(s, 1.f);
+        ImGui::Render();
+        automation.Publish(s);
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    automation.Publish(s);
+    ImGui::DestroyContext();
+    s.mods.reset();
+    return s.result == 1;
 }
 }
+
 bool Show() {
-    Draft d;
-    d.source = !options.disc.empty() ? options.disc : !options.game.empty() ? options.game : setup::RememberedDisc();
+    update::RemovePreviousFiles(app::ExeDir());
+    Session s;
+    s.source = !options.disc.empty() ? options.disc : !options.game.empty() ? options.game : setup::RememberedDisc();
     std::error_code unavailable;
+    const bool incomplete_folder = !s.source.empty() && fs::is_directory(s.source, unavailable) &&
+        !fs::is_regular_file(s.source / "default.xbe", unavailable);
+    // The first start, or a game that moved, opens the launcher on game selection.
     if (!options.configure_only && options.disc.empty() && options.game.empty() &&
-        (options.setup || d.source.empty() || !fs::exists(d.source, unavailable))) {
-        fs::path selected;
-        if (!setup::ChooseDisc(selected)) {
-            paths::ReportError(L"Select your copy of Shaolin Monks to play. You can also start the game with --disc path/to/game.iso.");
-            return false;
-        }
-        setup::Source prepared; std::vector<uint8_t> executable; std::string error;
-        if (!setup::PrepareGame(selected, prepared, executable, error, true) || !setup::RememberDisc(prepared.path, error)) {
-            paths::ReportError(Wide(error)); return false;
-        }
-        d.source = prepared.path;
-        options.disc = prepared.path;
+        (options.setup || s.source.empty() || incomplete_folder || !fs::exists(s.source, unavailable))) {
+        if (!s.source.empty() && !options.setup)
+            s.game_error = incomplete_folder ? "The saved game folder does not contain default.xbe. Choose your complete game folder or image." :
+                "Your game is no longer at " + files::Utf8(s.source) + ". Choose it again.";
+        s.source.clear();
+        s.game_required = true;
+        s.page = Page::Game;
     }
-    try { d.initial = Read(Disk()); }
+    try { s.settings = Read(Disk()); }
     catch (const std::exception& e) { paths::ReportError(L"Cannot read settings.toml.\n" + Wide(e.what())); return false; }
-    d.s = d.initial;
-    for(const auto& choice:mods::LanguageChoices({},d.s.language)) {
-        d.language_codes.push_back(choice.code);d.language_names.push_back(choice.name);
-    }
-    d.data_folder = paths::Root(); d.save_folder = paths::SaveRoot();
-    linux_launcher::Window window;
-    if (!window.Open("Shaolin Monks Recomp", 720, 560)) {
-        if (options.disc.empty() && options.game.empty() && !d.source.empty()) options.disc = d.source;
+    s.data_folder = paths::Root(); s.save_folder = paths::SaveRoot();
+    s.check_updates = CheckUpdatesEnabled();
+    if (!options.launcher_test.empty()) return RunAutomated(s);
+
+    Window window;
+    if (!window.Open("OpenShao", 1040, 640, art::Prepare)) {
+        // Without a launcher window, the system dialogs select the game.
+        if (s.game_required) {
+            fs::path selected;
+            if (!setup::ChooseDisc(selected)) return false;
+            setup::Source prepared; std::vector<uint8_t> executable; std::string error;
+            if (!setup::PrepareGame(selected, prepared, executable, error, true) || !setup::RememberDisc(prepared.path, error)) {
+                paths::ReportError(Wide(error)); return false;
+            }
+            s.source = prepared.path;
+        }
+        if (options.disc.empty() && options.game.empty() && !s.source.empty()) options.disc = s.source;
         return PlayWithSavedSettings();
     }
-    d.mods = std::make_unique<mods::Browser>(paths::Mods());
-    if (!paths::MoveWarning().empty()) Fail(d, "Folder move", paths::MoveWarning());
-    while (d.result < 0) {
-        if (!window.BeginFrame() && d.popup == Draft::Popup::None) Request(d, Draft::Action::Close, false);
-        Frame(d);
-        window.EndFrame();
+    s.mods = std::make_unique<mods::Browser>(paths::Mods());
+    if (s.check_updates) {
+        s.updater = std::make_unique<update::Updater>(app::ExeDir(), paths::Cache() / "update", mods::RecompVersion);
+        s.updater->Check();
+    }
+    if (!paths::MoveWarning().empty()) s.Message("Folder move", paths::MoveWarning());
+    {
+        Gamepads gamepads;
+        while (s.result < 0) {
+            if (!window.BeginFrame(s.Animating())) s.Close();
+            gamepads.Poll(s);
+            Draw(s, window.Scale());
+            window.EndFrame();
+            if (s.updater && s.updater->Get().state == update::State::Ready) { s.relaunch = true; s.result = 0; }
+        }
     }
     window.Close();
-    return d.result == 1;
+    s.mods.reset();
+    s.updater.reset();
+    if (s.relaunch) {
+        std::string error;
+        paths::ReleaseDataLock();
+        if (!update::Relaunch(app::ExeDir(), error)) paths::ReportError(L"The update is installed. Start OpenShao again to use it.\n" + Wide(error));
+        return false;
+    }
+    return s.result == 1;
 }
-#endif
 bool ShouldPersist() { return persist.load(); }
 void Load(const void* raw) {
     const auto& table = *static_cast<const toml::table*>(raw);
     current = Read(table); app::Get().fps_cap = FrameRate;
-    controller::Load(raw); mouse::Configure(current.mouse); performance::SetVisible(current.show_fps);
-    if (!options.language_pack.empty()) current.language = "pt-BR";
+    controller::Load(raw); keyboard::Configure(current.keyboard); mouse::Configure(current.mouse); performance::SetVisible(current.show_fps);
+    if (!options.language_pack.empty() && !options.resume_main_menu) current.language = "pt-BR";
+    Publish();
 }
 void Save(void* raw) {
+    std::lock_guard guard(settings_mutex);
     auto& table = *static_cast<toml::table*>(raw);
-    table.insert_or_assign("language", current.language); table.insert_or_assign("master_volume", current.master_volume);
+    table.insert_or_assign("language", requested_language.empty()?current.language:requested_language); table.insert_or_assign("master_volume", current.master_volume);
+    table.insert_or_assign("voice_language",requested_voice_language.empty()?current.voice_language:requested_voice_language);
+    table.erase("blur"); table.erase("bloom");
+    table.insert_or_assign("bloom_effect", current.bloom_effect);
+    table.insert_or_assign("aspect_ratio",current.aspect_ratio);
     table.insert_or_assign("show_fps", performance::Visible()); controller::Save(raw);
     const auto extras = Merge({}, current);
+    table.insert_or_assign("enhancements", *extras["enhancements"].as_table());
     table.insert_or_assign("game", *extras["game"].as_table());
     table.insert_or_assign("mouse", *extras["mouse"].as_table());
+    table.insert_or_assign("keyboard", *extras["keyboard"].as_table());
 }
 bool Persist(const toml::table& table, std::string& error) {
     if (!ShouldPersist()) return true;
     try { return Write(paths::Config(), Merge(Disk(), Read(table)), error); }
     catch (const std::exception& e) { error = e.what(); return false; }
 }
-unsigned Language() { return GameLanguage(current.language); }
-float AudioGain() { return current.master_volume / 100.f; }
-const Settings& Current() { return current; }
+unsigned VoiceLanguageIndex(){return GameLanguage(Current().voice_language);}
+unsigned Language() { return GameLanguage(Current().language); }
+float AudioGain() { return audio_gain.load(); }
+const Settings& Current() { thread_local std::shared_ptr<const Settings> snapshot; snapshot=published.load();return *snapshot; }
+Settings Saved(){try{return Read(Disk());}catch(...){return Current();}}
+bool LanguageAvailable(std::string_view language){return !NeedsLanguagePack(language);}
+bool ApplyInGame(const Settings& settings,bool save,std::string& error) {
+    std::lock_guard guard(settings_mutex);
+    if(!Validate(settings,error))return false;
+    if(NeedsLanguagePack(settings.language) || NeedsLanguagePack(settings.voice_language)){error="Install and enable the language pack in the launcher's Mods page first.";return false;}
+    if(save) {
+        try {if(!Write(paths::Config(),Merge(Disk(),settings),error))return false;}
+        catch(const std::exception& e){error=e.what();return false;}
+        persist=true;
+        requested_language=settings.language;requested_voice_language=settings.voice_language;
+    }
+    const auto previous=Current();
+    current=settings;
+    // Resource archives and font atlases stay coherent until the next boot.
+    current.language=previous.language;current.voice_language=previous.voice_language;
+    Publish();
+    auto& host=app::Get();
+    host.display_mode=settings.display_mode=="fullscreen"?app::DisplayMode::Fullscreen:
+        settings.display_mode=="windowed"?app::DisplayMode::Windowed:app::DisplayMode::Borderless;
+    host.width=settings.width;host.height=settings.height;host.render_percent=settings.render_percent;
+    host.vsync=settings.vsync;host.aniso=settings.aniso;
+    controller::Configure(settings);keyboard::Configure(settings.keyboard);mouse::Configure(settings.mouse);performance::SetVisible(settings.show_fps);
+    if(previous.display_mode!=settings.display_mode || previous.width!=settings.width || previous.height!=settings.height)
+        app::ApplyDisplay();
+    error.clear();return true;
+}
 }

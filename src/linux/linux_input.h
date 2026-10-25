@@ -1,6 +1,4 @@
 #pragma once
-// SDL keyboard and mouse events for the shared input code. The Windows
-// build receives the same input through window messages instead.
 #include <cstdint>
 
 namespace linux_input {
@@ -12,8 +10,9 @@ unsigned VirtualKey(int scancode);
 void Window(void* sdl_window);
 void Motion(float dx, float dy);
 void Button(uint8_t sdl_button, bool down);
+void Wheel(float direction);
 void ToggleCapture();   // F10
 void KeyPressed(unsigned virtual_key);
 void FocusLost();
 
-}  // namespace linux_input
+}

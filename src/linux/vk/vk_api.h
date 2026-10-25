@@ -1,16 +1,15 @@
 #pragma once
-// Vulkan entry points, loaded at run time through SDL's loader so the binary
-// starts (and falls back to no picture) on a PC without libvulkan.
+// Load Vulkan through SDL so the executable can start without libvulkan.
 #ifndef VK_NO_PROTOTYPES
 #define VK_NO_PROTOTYPES
 #endif
 #include <vulkan/vulkan.h>
 
-#define SHAOLIN_VK_GLOBAL(X) \
+#define OPENSHAO_VK_GLOBAL(X) \
     X(vkCreateInstance)      \
     X(vkEnumerateInstanceExtensionProperties)
 
-#define SHAOLIN_VK_INSTANCE(X)                     \
+#define OPENSHAO_VK_INSTANCE(X)                     \
     X(vkDestroyInstance)                           \
     X(vkEnumeratePhysicalDevices)                  \
     X(vkGetPhysicalDeviceProperties)               \
@@ -28,7 +27,7 @@
     X(vkGetPhysicalDeviceSurfaceFormatsKHR)        \
     X(vkGetPhysicalDeviceSurfacePresentModesKHR)
 
-#define SHAOLIN_VK_DEVICE(X)          \
+#define OPENSHAO_VK_DEVICE(X)          \
     X(vkDestroyDevice)                \
     X(vkGetDeviceQueue)               \
     X(vkDeviceWaitIdle)               \
@@ -106,7 +105,7 @@
     X(vkCmdClearAttachments)
 
 // core in 1.2 and 1.3, or their KHR names on older drivers
-#define SHAOLIN_VK_PROMOTED(X)                   \
+#define OPENSHAO_VK_PROMOTED(X)                   \
     X(vkWaitSemaphores, "vkWaitSemaphoresKHR")   \
     X(vkGetSemaphoreCounterValue, "vkGetSemaphoreCounterValueKHR") \
     X(vkCmdBeginRendering, "vkCmdBeginRenderingKHR") \
@@ -115,18 +114,17 @@
 namespace vkapi {
 
 struct Table {
-#define SHAOLIN_VK_MEMBER(name) PFN_##name name = nullptr;
-#define SHAOLIN_VK_MEMBER2(name, alt) PFN_##name name = nullptr;
+#define OPENSHAO_VK_MEMBER(name) PFN_##name name = nullptr;
+#define OPENSHAO_VK_MEMBER2(name, alt) PFN_##name name = nullptr;
     PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr = nullptr;
-    SHAOLIN_VK_GLOBAL(SHAOLIN_VK_MEMBER)
-    SHAOLIN_VK_INSTANCE(SHAOLIN_VK_MEMBER)
-    SHAOLIN_VK_DEVICE(SHAOLIN_VK_MEMBER)
-    SHAOLIN_VK_PROMOTED(SHAOLIN_VK_MEMBER2)
-#undef SHAOLIN_VK_MEMBER
-#undef SHAOLIN_VK_MEMBER2
+    OPENSHAO_VK_GLOBAL(OPENSHAO_VK_MEMBER)
+    OPENSHAO_VK_INSTANCE(OPENSHAO_VK_MEMBER)
+    OPENSHAO_VK_DEVICE(OPENSHAO_VK_MEMBER)
+    OPENSHAO_VK_PROMOTED(OPENSHAO_VK_MEMBER2)
+#undef OPENSHAO_VK_MEMBER
+#undef OPENSHAO_VK_MEMBER2
 };
 
-// the process's table and device, for the objects that free themselves
 extern Table vk;
 extern VkDevice device;
 
@@ -136,4 +134,4 @@ bool LoadDevice(VkDevice dev);
 
 const char* ResultName(VkResult r);
 
-}  // namespace vkapi
+}

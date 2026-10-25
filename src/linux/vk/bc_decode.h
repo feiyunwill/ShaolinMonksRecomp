@@ -1,7 +1,6 @@
 #pragma once
-// BC1, BC2 and BC3 (DXT1, DXT3, DXT5) blocks to BGRA8, for a Vulkan device
-// without textureCompressionBC. Written from the block layouts in the Khronos
-// Data Format Specification, section "S3TC Compressed Texture Image Formats".
+// Decode BC1/BC2/BC3 to BGRA8 when textureCompressionBC is unavailable.
+// Layouts follow the Khronos Data Format Specification, S3TC compressed texture formats.
 #include <cstdint>
 #include <vector>
 
@@ -12,4 +11,4 @@ namespace vkbc {
 void Decode(int bc, const uint8_t* blocks, uint32_t block_pitch, uint32_t width, uint32_t height, uint32_t slices,
             std::vector<uint8_t>& out, uint32_t& out_pitch);
 
-}  // namespace vkbc
+}

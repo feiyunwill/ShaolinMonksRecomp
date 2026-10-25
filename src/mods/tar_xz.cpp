@@ -11,7 +11,7 @@ extern "C" {
 #include <xz.h>
 }
 namespace fs=std::filesystem;
-namespace shaolin::mods {
+namespace openshao::mods {
 namespace {
 struct Input {
     std::ifstream file;
@@ -53,7 +53,7 @@ struct Input {
         } return n;
     }
     void Exact(std::span<uint8_t> target) {
-        if(Read(target)!=target.size())throw std::runtime_error("The mod archive is incomplete. Download it again or rebuild it with the Krypt builder.");
+        if(Read(target)!=target.size())throw std::runtime_error("The mod archive is incomplete. Download it again or rebuild it with the OpenShao-Mods builder.");
     }
 };
 std::string Field(const uint8_t* p,size_t n) { size_t len=0;while(len<n&&p[len])++len;return {reinterpret_cast<const char*>(p),len}; }

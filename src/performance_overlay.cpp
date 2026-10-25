@@ -1,9 +1,10 @@
 #include "performance_overlay.h"
+#include "mods/version.h"
 #include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <imgui.h>
-namespace shaolin::performance {
+namespace openshao::performance {
 namespace { std::atomic<bool> visible{false}; }
 bool Visible() { return visible.load(std::memory_order_relaxed); }
 void SetVisible(bool value) { visible.store(value, std::memory_order_relaxed); }
@@ -25,10 +26,18 @@ void Draw(double fps) {
     const auto* viewport = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos({viewport->WorkPos.x + 12, viewport->WorkPos.y + 12}, ImGuiCond_Always);
     ImGui::SetNextWindowBgAlpha(.78f);
+    // Keep the panel size stable whatever the width of the version text.
+    ImGui::SetNextWindowSizeConstraints({280, 64}, {FLT_MAX, FLT_MAX});
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,{14,12});
     constexpr auto flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
         ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav |
         ImGuiWindowFlags_NoInputs;
-    if (ImGui::Begin("##shaolin-performance", nullptr, flags)) ImGui::TextUnformatted(Format(fps).c_str());
+    if (ImGui::Begin("##openshao-performance", nullptr, flags)) {
+        ImGui::SetWindowFontScale(1.5f);
+        ImGui::Text("OpenShao %s",mods::RecompVersion);
+        ImGui::TextUnformatted(Format(fps).c_str());
+    }
     ImGui::End();
+    ImGui::PopStyleVar();
 }
 }

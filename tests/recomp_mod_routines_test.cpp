@@ -8,13 +8,13 @@
 #include <stdexcept>
 #include <thread>
 namespace fs=std::filesystem;
-using namespace shaolin::mods;
+using namespace openshao::mods;
 void Check(bool good,const char* message){if(!good)throw std::runtime_error(message);}
 void Original(X86Context& ctx,uint8_t*){ctx.eax+=10;ctx.esp+=4;}
 X86_FUNC(__imp__sub_00000100){Original(ctx,base);}
 X86_WEAK_FUNC(sub_00000100,__imp__sub_00000100)
 int main(){
-    const auto root=fs::temp_directory_path()/("shaolin-routines-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    const auto root=fs::temp_directory_path()/("openshao-routines-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     fs::create_directories(root);
     try{
         const auto script=root/"gameplay.lua";

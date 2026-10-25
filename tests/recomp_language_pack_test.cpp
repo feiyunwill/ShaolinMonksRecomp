@@ -21,7 +21,7 @@ static void Packet(Bytes& b, uint8_t id, const Bytes& body) {
 }
 
 static int VerifyReal(const fs::path& game, const fs::path& pack, const fs::path& reference) {
-    using namespace shaolin::language;
+    using namespace openshao::language;
     std::map<std::string, ReadAt> readers;
     for (char c = 'D'; c <= 'K'; ++c) {
         const auto name = std::string("GAMEDATA.WA") + c;
@@ -68,10 +68,10 @@ static int VerifyReal(const fs::path& game, const fs::path& pack, const fs::path
 
 int main(int argc, char** argv) {
     if (argc == 4) return VerifyReal(argv[1], argv[2], argv[3]);
-    using namespace shaolin::language;
+    using namespace openshao::language;
     unsigned failures = 0;
     const auto check = [&](bool good, const char* message) { if (!good) { ++failures; std::cerr << message << '\n'; } };
-    const auto root = fs::temp_directory_path() / ("shaolin-language-" + std::to_string(GetCurrentProcessId()));
+    const auto root = fs::temp_directory_path() / ("openshao-language-" + std::to_string(GetCurrentProcessId()));
     fs::create_directories(root);
     check(FindInstalledPack(root, "pt-BR").empty(), "A missing pack must not be offered as installed");
     const auto installed = root / "languages/LanguagePack_PT-BR";
@@ -231,6 +231,22 @@ int main(int argc, char** argv) {
     const std::array<fs::path,2> conflict{textures,textures};
     check(!MountPacks(conflict,xbe,source_read,source_size,false,error)&&!OverlayFile({"gamedata.wad"}),
           "Conflicting resource plans must fail without publishing partial overlays");
+    Write(installed/"audio/voices/original.adx",{41,42,43});
+    const std::array<PackSelection,1> text_only{{{installed,true,false}}};
+    check(MountPacks(text_only,xbe,source_read,source_size,true,error) && Statistics().archive.resources==3 &&
+          Statistics().archive.voice_names==0 && Statistics().movies==0 && !OverlayFile({"front","movies","opening.sfd"}) && CreditsEnabled(),
+          "PT-BR text with original voices must retain text/fonts and exclude both dialogue and movie audio");
+    const std::array<PackSelection,1> voices_only{{{installed,false,true}}};
+    check(MountPacks(voices_only,xbe,source_read,source_size,false,error) && Statistics().archive.resources==0 &&
+          Statistics().archive.voice_names==1 && Statistics().movies==4 && !CreditsEnabled(),
+          "PT-BR voices with other text must include dialogue and movie audio without translated text resources");
+    Bytes untouched_fonts(0x600000,0xCC);
+    check(ApplyFonts(untouched_fonts,error) && std::all_of(untouched_fonts.begin(),untouched_fonts.end(),[](auto b){return b==0xCC;}),
+          "A voice-only pack must never modify embedded text fonts");
+    const std::array<PackSelection,2> split{{{installed,true,false},{installed,false,true}}};
+    check(MountPacks(split,xbe,source_read,source_size,true,error) && Statistics().archive.resources==3 &&
+          Statistics().archive.voice_names==1 && Statistics().movies==4,
+          "Separate text and voice layers must combine without duplicate resources");
     virtual_wad.reset(); output.reset(); opening.reset();
     fs::remove_all(root);
     return failures ? 1 : 0;

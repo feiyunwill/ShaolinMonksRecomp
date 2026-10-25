@@ -4,22 +4,29 @@
 #include <string>
 #include <toml++/toml.hpp>
 #include "mouse_state.h"
+#include "input_bindings.h"
+#include "aspect_ratio.h"
+#include "brightness.h"
 
-namespace shaolin::launcher {
+namespace openshao::launcher {
 inline constexpr int FrameRate=60;
 inline constexpr std::array<const char*, 6> languages{"en", "fr", "de", "es", "it", "pt-BR"};
-inline constexpr std::array<const char*, 10> binding_keys{"a", "b", "x", "y", "black", "white", "start", "back", "left_stick", "right_stick"};
+inline constexpr std::array<const char*,6> voice_languages{"en","fr","de","es","it","pt-BR"};
+inline constexpr auto binding_keys = bindings::keys;
 struct Settings {
-    std::string language = "en", display_mode = "borderless";
+    std::string voice_language = "en";
+    std::string language = "en", display_mode = "borderless", aspect_ratio = "original";
     int width = 0, height = 0, render_percent = 100, aniso = 0;
     int master_volume = 100;
     double deadzone = .15;
-    bool vsync = true, show_fps = false, rumble = true;
+    bool vsync = true, bloom_effect = false, show_fps = false, rumble = true;
+    bool scorpion_unfiltered = false;
     mouse::Settings mouse;
     bool original_override = false, camera_reverse = false;
     int music_volume = 90, effects_volume = 90, speech_volume = 90;
-    int brightness = 0, versus_rounds = 3, versus_time = 120;
-    std::array<std::string, 10> bindings{"a", "b", "x", "y", "rightshoulder", "leftshoulder", "start", "back", "leftstick", "rightstick"};
+    int brightness = brightness::DefaultPercent, versus_rounds = 3, versus_time = 120;
+    std::array<std::string,24> bindings = bindings::controller_defaults;
+    bindings::Keyboard keyboard;
     bool operator==(const Settings&) const = default;
 };
 Settings Read(const toml::table& table);

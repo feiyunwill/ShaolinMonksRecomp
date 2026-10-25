@@ -4,7 +4,7 @@
 #endif
 #include <windows.h>
 
-namespace shaolin::window {
+namespace openshao::window {
 bool Place(HWND window, bool windowed, unsigned width, unsigned height);
 bool ClientBounds(HWND window, RECT& bounds);
 }

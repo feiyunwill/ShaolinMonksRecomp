@@ -25,7 +25,7 @@ def main():
     parser.add_argument('--output', required=True, type=Path)
     args = parser.parse_args()
     addresses = targets(args.mapping, args.profile, [args.source, args.adapted])
-    text = '#pragma once\n#include <array>\n#include <cstdint>\nnamespace shaolin::mods {\n'
+    text = '#pragma once\n#include <array>\n#include <cstdint>\nnamespace openshao::mods {\n'
     text += f'inline constexpr std::array<uint32_t,{len(addresses)}> RoutineTargets{{\n'
     text += ''.join(f'0x{address:08X}u,\n' for address in addresses) + '};\n}\n'
     if not args.output.exists() or args.output.read_text(encoding='utf-8') != text:

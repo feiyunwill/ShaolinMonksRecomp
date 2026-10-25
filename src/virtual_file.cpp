@@ -12,7 +12,7 @@
 #include <mutex>
 #include <stdexcept>
 
-namespace shaolin::language {
+namespace openshao::language {
 void VirtualFile::Add(uint64_t at, uint64_t size, uint64_t offset, ReadAt read) {
     if (sealed_ || size > UINT64_MAX - at || size > UINT64_MAX - offset || !read)
         throw std::runtime_error("Invalid virtual file segment");

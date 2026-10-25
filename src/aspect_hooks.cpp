@@ -1,0 +1,9 @@
+#include "aspect_ratio.h"
+#include "menu_renderer.h"
+#include "recomp_settings.h"
+#include "cpu/x86_context.h"
+#include "kernel/kernel.h"
+#include "core/log.h"
+#include <bit>
+#include <cstring>
+#include "aspect_hooks.inl"

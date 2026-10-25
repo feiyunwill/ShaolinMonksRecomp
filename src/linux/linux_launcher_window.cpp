@@ -1,4 +1,4 @@
-#include "linux/linux_launcher_window.h"
+#include "launcher_window.h"
 
 #include "linux/vk/vk_api.h"
 
@@ -17,7 +17,7 @@
 
 using vkapi::vk;
 
-namespace linux_launcher {
+namespace openshao::launcher {
 namespace {
 
 constexpr uint32_t kFrames = 2;
@@ -74,70 +74,6 @@ const char* GetClipboard(void*) {
 }
 void SetClipboard(void*, const char* text) { SDL_SetClipboardText(text); }
 
-// a proportional system font with the accented letters paths and names use; ImGui's own font otherwise
-void LoadFont(float pixels) {
-    ImGuiIO& io = ImGui::GetIO();
-    const char* candidates[] = {
-        "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
-        "/usr/share/fonts/noto/NotoSans-Regular.ttf",
-        "/usr/share/fonts/google-noto/NotoSans-Regular.ttf",
-        "/usr/share/fonts/google-noto-vf/NotoSans[wght].ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/TTF/DejaVuSans.ttf",
-        "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf",
-        "/usr/share/fonts/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/ubuntu/Ubuntu-R.ttf",
-        "/usr/share/fonts/liberation-sans/LiberationSans-Regular.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-    };
-    for (const char* path : candidates) {
-        if (SDL_GetPathInfo(path, nullptr) && io.Fonts->AddFontFromFileTTF(path, pixels)) return;
-    }
-    ImFontConfig config;
-    config.SizePixels = pixels;
-    io.Fonts->AddFontDefault(&config);
-}
-
-void Style(float scale) {
-    ImGui::StyleColorsDark();
-    ImGuiStyle& s = ImGui::GetStyle();
-    s.WindowRounding = 0;
-    s.FrameRounding = 4;
-    s.TabRounding = 4;
-    s.GrabRounding = 4;
-    s.PopupRounding = 4;
-    s.FramePadding = ImVec2(8, 5);
-    s.ItemSpacing = ImVec2(10, 8);
-    s.WindowPadding = ImVec2(18, 16);
-    ImVec4* c = s.Colors;
-    const ImVec4 accent(0.72f, 0.18f, 0.12f, 1.0f);  // the series' red
-    c[ImGuiCol_WindowBg] = ImVec4(0.09f, 0.09f, 0.10f, 1.0f);
-    c[ImGuiCol_PopupBg] = ImVec4(0.12f, 0.12f, 0.13f, 1.0f);
-    c[ImGuiCol_FrameBg] = ImVec4(0.17f, 0.17f, 0.19f, 1.0f);
-    c[ImGuiCol_FrameBgHovered] = ImVec4(0.23f, 0.22f, 0.24f, 1.0f);
-    c[ImGuiCol_FrameBgActive] = ImVec4(0.28f, 0.25f, 0.26f, 1.0f);
-    c[ImGuiCol_Tab] = ImVec4(0.15f, 0.15f, 0.16f, 1.0f);
-    c[ImGuiCol_TabHovered] = ImVec4(0.55f, 0.16f, 0.11f, 1.0f);
-    c[ImGuiCol_TabSelected] = accent;
-    c[ImGuiCol_Button] = ImVec4(0.20f, 0.20f, 0.22f, 1.0f);
-    c[ImGuiCol_ButtonHovered] = ImVec4(0.55f, 0.16f, 0.11f, 1.0f);
-    c[ImGuiCol_ButtonActive] = accent;
-    c[ImGuiCol_Header] = ImVec4(0.30f, 0.14f, 0.11f, 1.0f);
-    c[ImGuiCol_HeaderHovered] = ImVec4(0.55f, 0.16f, 0.11f, 1.0f);
-    c[ImGuiCol_HeaderActive] = accent;
-    c[ImGuiCol_CheckMark] = ImVec4(0.95f, 0.55f, 0.30f, 1.0f);
-    c[ImGuiCol_SliderGrab] = ImVec4(0.85f, 0.35f, 0.22f, 1.0f);
-    c[ImGuiCol_SliderGrabActive] = ImVec4(0.95f, 0.55f, 0.30f, 1.0f);
-    c[ImGuiCol_Separator] = ImVec4(0.25f, 0.25f, 0.27f, 1.0f);
-    c[ImGuiCol_TextDisabled] = ImVec4(0.55f, 0.55f, 0.57f, 1.0f);
-    c[ImGuiCol_TitleBg] = ImVec4(0.14f, 0.14f, 0.15f, 1.0f);
-    c[ImGuiCol_TitleBgActive] = ImVec4(0.30f, 0.12f, 0.09f, 1.0f);
-    c[ImGuiCol_ModalWindowDimBg] = ImVec4(0.0f, 0.0f, 0.0f, 0.55f);
-    s.WindowBorderSize = 0;
-    s.PopupBorderSize = 1;
-    s.ScaleAllSizes(scale);
-}
-
 PFN_vkVoidFunction UiLoader(const char* name, void* user) {
     auto instance = static_cast<VkInstance>(user);
     PFN_vkVoidFunction f = vk.vkGetInstanceProcAddr(instance, name);
@@ -151,7 +87,7 @@ PFN_vkVoidFunction UiLoader(const char* name, void* user) {
     return f;
 }
 
-}  // namespace
+}
 
 struct Window::State {
     SDL_Window* window = nullptr;
@@ -178,6 +114,7 @@ struct Window::State {
     bool dirty = false;
     bool text_input = false;
     uint64_t last_ticks = 0;
+    float scale = 1.f;
 
     bool Instance();
     bool Device();
@@ -192,7 +129,7 @@ bool Window::State::Instance() {
     const char* const* ext = SDL_Vulkan_GetInstanceExtensions(&count);
     if (!ext) return false;
     VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
-    app.pApplicationName = "Shaolin Monks Recomp launcher";
+    app.pApplicationName = "OpenShao launcher";
     app.apiVersion = VK_API_VERSION_1_2;
     VkInstanceCreateInfo ci{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
     ci.pApplicationInfo = &app;
@@ -408,7 +345,8 @@ void Window::State::Render() {
     color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     color.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    color.clearValue.color = {{0.09f, 0.09f, 0.10f, 1.0f}};
+    // Matches the launcher background, so a resize never flashes another color.
+    color.clearValue.color = {{0x25 / 255.f, 0x28 / 255.f, 0x2C / 255.f, 1.0f}};
     VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
     ri.renderArea = {{0, 0}, extent};
     ri.layerCount = 1;
@@ -451,22 +389,23 @@ Window::~Window() {
     delete s_;
 }
 
-SDL_Window* Window::Handle() const { return s_->window; }
+float Window::Scale() const { return s_->scale; }
 
-bool Window::Open(const char* title, int width, int height) {
+bool Window::Open(const char* title, int width, int height, const std::function<void(float)>& prepare) {
     State& s = *s_;
     if (!SDL_WasInit(SDL_INIT_VIDEO) && !SDL_InitSubSystem(SDL_INIT_VIDEO)) {
         LOGI("launcher: no display (%s)", SDL_GetError());
         return false;
     }
     const float scale = std::max(1.0f, SDL_GetDisplayContentScale(SDL_GetPrimaryDisplay()));
+    s.scale = scale;
     s.window = SDL_CreateWindow(title, int(width * scale), int(height * scale),
                                 SDL_WINDOW_VULKAN | SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_RESIZABLE);
     if (!s.window) {
         LOGI("launcher: no window (%s)", SDL_GetError());
         return false;
     }
-    SDL_SetWindowMinimumSize(s.window, int(560 * scale), int(460 * scale));
+    SDL_SetWindowMinimumSize(s.window, int(900 * scale), int(600 * scale));
     if (!s.Instance() || !s.Device() || !s.Swapchain()) {
         LOGI("launcher: Vulkan unavailable for the settings window");
         Close();
@@ -478,11 +417,10 @@ bool Window::Open(const char* title, int width, int height) {
     ImGuiIO& io = ImGui::GetIO();
     io.IniFilename = nullptr;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-    io.BackendPlatformName = "shaolin_sdl3";
+    io.BackendPlatformName = "openshao_sdl3";
     io.SetClipboardTextFn = SetClipboard;
     io.GetClipboardTextFn = GetClipboard;
-    LoadFont(17.0f * scale);
-    Style(scale);
+    if (prepare) prepare(scale);
     if (!ImGui_ImplVulkan_LoadFunctions(UiLoader, s.instance)) {
         Close();
         return false;
@@ -512,14 +450,13 @@ bool Window::Open(const char* title, int width, int height) {
     return true;
 }
 
-bool Window::BeginFrame() {
+bool Window::BeginFrame(bool animate) {
     State& s = *s_;
     ImGuiIO& io = ImGui::GetIO();
     bool open = true;
     SDL_Event e;
-    // idle while nothing happens: the launcher wakes on input. A press that follows a move waits for the next
-    // frame: ImGui's tabs take a click only over an item they already saw hovered on the frame before.
-    if (SDL_WaitEventTimeout(nullptr, 250)) {
+    // Wait one frame after pointer movement: ImGui requires an item to have been hovered before a click.
+    if (SDL_WaitEventTimeout(nullptr, animate ? 16 : 250)) {
         bool moved = false;
         while (SDL_PeepEvents(&e, 1, SDL_PEEKEVENT, SDL_EVENT_FIRST, SDL_EVENT_LAST) == 1) {
             if (moved && e.type == SDL_EVENT_MOUSE_BUTTON_DOWN) break;
@@ -617,4 +554,4 @@ void Window::Close() {
     s.text_input = false;
 }
 
-}  // namespace linux_launcher
+}

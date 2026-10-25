@@ -2,7 +2,7 @@
 #include <filesystem>
 #include <string>
 #include <string_view>
-namespace shaolin::files {
+namespace openshao::files {
 std::string Utf8(const std::filesystem::path& path);
 std::filesystem::path FromUtf8(std::string_view path);
 std::filesystem::path UniqueSibling(const std::filesystem::path& path, std::string_view suffix);

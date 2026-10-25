@@ -6,7 +6,7 @@
 #include <dxgiformat.h>
 #include "gpu/vertex.h"
 
-namespace shaolin {
+namespace openshao {
 bool UnitSpriteTexcoords(const gpu::Assembled& a) {
     if (!a.pretransformed || a.topology != gpu::Topology::Triangles || a.vertex_count < 3 || a.vertex_count > 6) return false;
     auto read = [&](unsigned r, unsigned v, float* value) {
@@ -124,7 +124,11 @@ float4 bounds(float2 p0,float2 p1,float2 p2,float4 t0,float4 t1,float4 t2) {
     if (any(c0>1e-4)||any(c1>1e-4)||any(c2>1e-4)) return unrestricted;
     float2 dx=((t1.xy-t0.xy)*b.y-(t2.xy-t0.xy)*a.y)/det;
     float2 dy=((t2.xy-t0.xy)*a.x-(t1.xy-t0.xy)*b.x)/det;
-    if (abs(dx.y)>1e-6||abs(dy.x)>1e-6) return unrestricted;
+    // A quarter turn swaps the screen axes. It still samples one atlas tile,
+    // including the negative V tile used by the brightness frame's right side.
+    bool aligned=abs(dx.y)<=1e-6&&abs(dy.x)<=1e-6;
+    bool rotated=abs(dx.x)<=1e-6&&abs(dy.y)<=1e-6;
+    if (!aligned&&!rotated) return unrestricted;
     float2 first=ceil(lo-1e-4), last=ceil(hi-1e-4)-1;
     if (any(last<first)) return unrestricted;
     float2 begin=t0.xy+dx*(first.x-p0.x)+dy*(first.y-p0.y);

@@ -2,7 +2,6 @@
 import argparse
 from contextlib import contextmanager
 import json
-import os
 from pathlib import Path
 import shutil
 import struct
@@ -13,7 +12,7 @@ import time
 
 @contextmanager
 def temporary_installation():
-    directory = tempfile.TemporaryDirectory(prefix='shaolin-distribution-')
+    directory = tempfile.TemporaryDirectory(prefix='openshao-distribution-')
     try:
         yield directory.name
     finally:
@@ -77,8 +76,6 @@ def main():
         exe = install / args.exe.name
         shutil.copy2(args.exe.resolve(), exe)
         data = root / 'User data with spaces \u00e7'
-        legacy = install / 'shaolin-recomp.toml'
-        legacy.write_text('fps_cap = 60\n[controller]\ndeadzone = 0.23\n')
 
         def run(*arguments, expected=0):
             result = subprocess.run([str(exe), *map(str, arguments)],
@@ -96,15 +93,15 @@ def main():
         assert Path(paths['cache']) == data / 'cache'
         assert Path(paths['crashes']) == data / 'crashes'
         settings = Path(paths['config'])
-        assert settings.read_bytes() == legacy.read_bytes(), 'Existing controller settings must migrate without changes'
         settings.write_text('fps_cap = 30\n')
         run('--data-dir', data, '--validate-disc', root / 'missing.iso', expected=3)
-        assert settings.read_text() == 'fps_cap = 30\n', 'Migration must preserve the destination settings'
-        assert legacy.exists(), 'Migration must preserve its source'
+        assert settings.read_text() == 'fps_cap = 30\n', 'A start must preserve existing settings'
         isolated = json.loads(run('--background', '--paths').stdout)
         assert Path(isolated['data']) == install / 'runtime-data'
         default = json.loads(run('--paths').stdout)
-        assert Path(default['data']).name == 'Shaolin Monks Recomp'
+        # Until the first normal start renames it, a read-only query reports the data folder of an earlier release.
+        reported = Path(default['data'])
+        assert reported.name == 'OpenShao' or not (reported.parent / 'OpenShao').exists(), reported
         assert 'appdata' in str(Path(default['data'])).lower() or Path(default['data']).parent.exists()
         run('--background', '--setup', expected=2)
         run('--data-dir', data, '--register-disc', root / 'missing.xiso.iso', expected=3)
@@ -115,7 +112,7 @@ def main():
         assert 'Xbox disc image' in rejected.stderr
         assert not (data / 'game-source.toml').exists()
         check_icon(exe)
-        print('PASS: AppData paths, isolated diagnostics, settings migration, disc rejection, and application icon')
+        print('PASS: AppData paths, isolated diagnostics, settings preservation, disc rejection, and application icon')
 
 
 if __name__ == '__main__':

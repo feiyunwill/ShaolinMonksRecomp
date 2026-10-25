@@ -7,11 +7,11 @@
 #include "kernel/kernel.h"
 #include "host.h"
 #include "runtime_paths.h"
-#include SHAOLIN_FILES_TEST_SOURCE
-namespace shaolin { Options options; }
+#include OPENSHAO_FILES_TEST_SOURCE
+namespace openshao { Options options; }
 
 namespace fs = std::filesystem;
-namespace shaolin::language {
+namespace openshao::language {
 // The archive builder is covered separately; this fixture controls the DVD lookup boundary.
 static std::shared_ptr<const VirtualFile> overlay;
 std::shared_ptr<const VirtualFile> OverlayFile(const std::vector<std::string>& parts) {
@@ -51,10 +51,10 @@ static void Write(const fs::path& p, const std::string& data) { fs::create_direc
 
 int main() {
     std::vector<uint8_t> memory(65536); kernel::g_base = memory.data();
-    const auto root = fs::temp_directory_path() / ("shaolin-files-test-" + std::to_string(GetCurrentProcessId()));
+    const auto root = fs::temp_directory_path() / ("openshao-files-test-" + std::to_string(GetCurrentProcessId()));
     fs::create_directory(root);
     std::string path_error;
-    if (!shaolin::paths::Initialize(root, true, root / "app-data", path_error)) return 2;
+    if (!openshao::paths::Initialize(root, true, root / "app-data", path_error)) return 2;
     const auto data = root / "hdd", save = data / "E/UDATA/4d570029/slot/save.dat";
     Write(save, "old-progress");
     kernel::MountDefaults((root / "dvd").string(), data.string());
@@ -104,10 +104,10 @@ int main() {
     const auto translated_file = root / "language-cache/asset.bin";
     Write(translated_file, "translated-asset-with-a-different-size");
     const auto translated_size = static_cast<uint32_t>(fs::file_size(translated_file));
-    auto virtual_file = std::make_shared<shaolin::language::VirtualFile>();
-    virtual_file->Add(0, translated_size, 0, shaolin::language::PackFileReader(translated_file));
+    auto virtual_file = std::make_shared<openshao::language::VirtualFile>();
+    virtual_file->Add(0, translated_size, 0, openshao::language::PackFileReader(translated_file));
     virtual_file->SetSize(translated_size); virtual_file->Seal();
-    shaolin::language::overlay = virtual_file;
+    openshao::language::overlay = virtual_file;
     const auto translated = Open("D:\\asset.bin");
     check(translated && Call(219, {translated, 0, 0, 0, 0x250, 0x1000, translated_size, 0}) == 0 &&
           std::string(reinterpret_cast<char*>(kernel::HostPtr(0x1000)), translated_size) == Read(translated_file),
@@ -154,13 +154,13 @@ int main() {
           "Mounted-disc directory metadata must report the translated file size");
     kernel::CloseHandle(disc_directory);
     kernel::MountDisc(nullptr);
-    auto scattered = std::make_shared<shaolin::language::VirtualFile>();
+    auto scattered = std::make_shared<openshao::language::VirtualFile>();
     std::vector<uint8_t> pattern(8192);
     for (size_t i = 0; i < pattern.size(); ++i) pattern[i] = uint8_t(i % 251);
     scattered->AddBytes(0, {pattern.begin(), pattern.begin() + 4090});
     scattered->AddBytes(4090, {pattern.begin() + 4090, pattern.end()});
     scattered->SetSize(pattern.size()); scattered->Seal();
-    shaolin::language::overlay = scattered;
+    openshao::language::overlay = scattered;
     const auto scattered_handle = Open("D:\\asset.bin");
     kernel::W32(0x1800, 0x4000); kernel::W32(0x1808, 0x6000); kernel::W64(0x1A00, 0);
     check(scattered_handle && Call(220, {scattered_handle, 0, 0, 0, 0x250, 0x1800, 8192, 0x1A00}) == 0 &&
@@ -169,7 +169,7 @@ int main() {
           std::equal(pattern.begin() + 4096, pattern.end(), static_cast<uint8_t*>(kernel::HostPtr(0x6000))),
           "Scatter reads must cross virtual segments and guest pages without changing bytes");
     kernel::CloseHandle(scattered_handle);
-    shaolin::language::overlay.reset();
+    openshao::language::overlay.reset();
     virtual_file.reset();
     check(Read(dvd_file) == "original-asset", "Virtual language files must preserve original DVD bytes");
     const auto file = Open("U:\\slot\\save.dat", 5);

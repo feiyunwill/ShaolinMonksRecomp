@@ -11,7 +11,7 @@ import tempfile
 
 
 def main():
-    with tempfile.TemporaryDirectory(prefix='shaolin-browser-') as temp:
+    with tempfile.TemporaryDirectory(prefix='openshao-browser-') as temp:
         root = Path(temp)
         (root / 'game').mkdir()
         shutil.copyfile(sys.argv[2], root / 'game/default.xbe')
@@ -34,7 +34,7 @@ def main():
                         tar.addfile(info, io.BytesIO(data))
                 versions.insert(0, dict(version=version, recomp='0.2.0', size=archive.stat().st_size,
                                        sha256=hashlib.sha256(archive.read_bytes()).hexdigest(),
-                                       url='https://github.com/OAleex/ShaolinMonksRecompKrypt/releases/download/test/' + archive.name))
+                                       url='https://github.com/OAleex/OpenShao-Mods/releases/download/test/' + archive.name))
             mods.append(dict(mod, versions=versions))
         damaged = bytearray((root / 'NewMod-2.0.0.tar.xz').read_bytes())
         damaged[-20] ^= 1

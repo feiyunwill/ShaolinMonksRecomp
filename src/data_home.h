@@ -3,7 +3,7 @@
 #include <filesystem>
 #include <stdexcept>
 #include <string>
-namespace shaolin {
+namespace openshao {
 inline std::filesystem::path UserDataHome() {
     const char* value=std::getenv("XDG_DATA_HOME");
     if(value&&*value=='/') {const std::string s=value;return std::filesystem::path(std::u8string(s.begin(),s.end()));}

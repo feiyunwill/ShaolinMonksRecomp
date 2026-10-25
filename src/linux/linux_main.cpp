@@ -1,6 +1,3 @@
-// The Linux host: the SDL3 window and event loop, the app:: services the
-// runtime expects from the Windows host (app/main.cpp, splash, handover and
-// system information), and crash logging. Startup follows the Windows order.
 #include <SDL3/SDL.h>
 #include <csignal>
 #include <signal.h>
@@ -35,6 +32,7 @@
 #include "linux/virtual_keys.h"
 #include "performance_overlay.h"
 #include "runtime_paths.h"
+#include "restart.h"
 
 namespace app {
 namespace {
@@ -53,16 +51,15 @@ std::string Utf8(const std::filesystem::path& path) {
     return {bytes.begin(), bytes.end()};
 }
 
-// main thread only
+// Access only from the main thread.
 void ApplyNow() {
-    if (shaolin::options.background || !g_window) return;
+    if (openshao::options.background || !g_window) return;
     const Settings& s = Get();
     const SDL_DisplayID display = SDL_GetDisplayForWindow(g_window);
     if (s.display_mode == DisplayMode::Windowed) {
         SDL_SetWindowFullscreen(g_window, false);
         SDL_Rect area{};
         if (!SDL_GetDisplayUsableBounds(display, &area)) area = {0, 0, 1280, 720};
-        // as on Windows: the requested size, or 80% of the usable area, never larger than it
         double w = s.width && s.height ? s.width : area.w * 0.8, h = s.width && s.height ? s.height : area.h * 0.8;
         const double scale = std::min({1.0, area.w / w, area.h / h});
         SDL_SetWindowSize(g_window, std::max(1, int(w * scale)), std::max(1, int(h * scale)));
@@ -82,7 +79,7 @@ void ApplyNow() {
 }
 
 void OpenNow(bool apply) {
-    if (shaolin::options.background || !g_window) return;
+    if (openshao::options.background || !g_window) return;
     if (apply) ApplyNow();
     SDL_ShowWindow(g_window);
     SDL_RaiseWindow(g_window);
@@ -106,7 +103,7 @@ void CrashSignal(int signal) {
     }
     logx::Flush();
     const std::string text = "The game stopped because of an unexpected error (signal " + std::to_string(signal) + ").";
-    shaolin::paths::ReportError(std::filesystem::path(std::u8string(text.begin(), text.end())).wstring());
+    openshao::paths::ReportError(std::filesystem::path(std::u8string(text.begin(), text.end())).wstring());
     std::signal(signal, SIG_DFL);
     raise(signal);
 }
@@ -134,7 +131,7 @@ std::string OsName() {
     return (name.empty() ? std::string(u.sysname) : name) + " (kernel " + u.release + ")";
 }
 
-}  // namespace
+}
 
 std::filesystem::path ExeDir() { return linux_platform::ExecutablePath().parent_path(); }
 
@@ -169,7 +166,7 @@ void OpenGameWindow(bool apply) {
         OpenNow(apply);
         return;
     }
-    // returns once the window is up, as the Windows host's SendMessage does
+    // Return after window creation, matching the synchronous host handover.
     std::unique_lock lock(g_open_lock);
     g_open_done = false;
     PushEvent(kOpenWindow, apply);
@@ -192,7 +189,6 @@ void Pace() {
     while (clock::now() < next) std::this_thread::yield();
 }
 
-// The Windows host shows a splash and hands the window over between images; Linux opens on the first frame.
 bool OpenSplash() { return false; }
 void SplashFirstFrame() {
     if (!g_window_open.load()) OpenGameWindow();
@@ -224,12 +220,12 @@ void LogSystem() {
     LogSettings();
 }
 
-}  // namespace app
+}
 
 namespace {
 
 void HandleEvent(const SDL_Event& e, bool& running) {
-    using namespace shaolin;
+    using namespace openshao;
     switch (e.type) {
     case SDL_EVENT_QUIT:
     case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
@@ -249,7 +245,6 @@ void HandleEvent(const SDL_Event& e, bool& running) {
         const bool down = e.type == SDL_EVENT_KEY_DOWN;
         const unsigned key = linux_input::VirtualKey(e.key.scancode);
         if (key == VK_F9) {
-            // the overlay toggles on the first press, as WM_KEYDOWN without the repeat bit
             performance::Message(down ? 0x100 : 0x101, 0x78, e.key.repeat ? intptr_t(1) << 30 : 0);
             return;
         }
@@ -262,6 +257,8 @@ void HandleEvent(const SDL_Event& e, bool& running) {
         if (down) linux_input::KeyPressed(key);
         return;
     }
+    case SDL_EVENT_MOUSE_WHEEL:
+        linux_input::Wheel(e.wheel.y*(e.wheel.direction==SDL_MOUSEWHEEL_FLIPPED?-1.f:1.f));return;
     case SDL_EVENT_MOUSE_MOTION:
         linux_input::Motion(e.motion.xrel, e.motion.yrel);
         return;
@@ -283,40 +280,41 @@ void HandleEvent(const SDL_Event& e, bool& running) {
     }
 }
 
-}  // namespace
+}
 
 int main(int argc, char** argv) {
     linux_platform::SetArguments(argc, argv);
-    const int configured = shaolin::Configure();
+    const int configured = openshao::Configure();
     if (configured) return configured == 1 ? 0 : configured;
     for (int s : {SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT}) std::signal(s, app::CrashSignal);
     std::signal(SIGPIPE, SIG_IGN);
-    bool relaunched = false;
+    bool relaunched = openshao::options.resume_main_menu;
     for (const auto& argument : linux_platform::Arguments()) relaunched |= argument == L"--relaunched";
     std::string log = app::kGame.log;
     if (app::Instance() > 1) log += "-" + std::to_string(app::Instance());
-    logx::Init(shaolin::paths::Logs().string(), log, relaunched);
+    logx::Init(openshao::paths::Logs().string(), log, relaunched);
     app::Load();
-    if (shaolin::options.background) {
+    {std::string error;if(!openshao::restart::ContinueStartup(error)){LOGE("Language restart: %s",error.c_str());return 8;}}
+    if (openshao::options.background) {
         app::Get().display_mode = app::DisplayMode::Windowed;
         app::Get().width = 640;
         app::Get().height = 480;
     }
-    if (shaolin::options.configure_only ||
-        (!shaolin::options.background && !shaolin::options.validate_disc &&
-         !shaolin::options.validate_language_pack && !shaolin::options.no_launcher)) {
-        if (!shaolin::launcher::Show()) return 0;
+    if (openshao::options.configure_only ||
+        (!openshao::options.background && !openshao::options.validate_disc &&
+         !openshao::options.validate_language_pack && !openshao::options.no_launcher)) {
+        if (!openshao::launcher::Show()) return 0;
     }
-    shaolin::StartWatchdog();
+    openshao::StartWatchdog();
     if (app::kGame.init) app::kGame.init();
 
-    // background diagnostics run without a display, as the hidden window does on Windows
-    if (shaolin::options.background) SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "offscreen,dummy");
-    SDL_SetHint(SDL_HINT_APP_ID, "ShaolinMonksRecomp");
-    SDL_SetHint(SDL_HINT_APP_NAME, "Shaolin Monks Recomp");
+    // Background diagnostics must run without a display.
+    if (openshao::options.background) SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "offscreen,dummy");
+    SDL_SetHint(SDL_HINT_APP_ID, "OpenShao");
+    SDL_SetHint(SDL_HINT_APP_NAME, "OpenShao");
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
         std::fprintf(stderr, "SDL video initialization failed: %s\n", SDL_GetError());
-        shaolin::paths::ReportError(L"The display could not be opened. Check that a desktop session is running.");
+        openshao::paths::ReportError(L"The display could not be opened. Check that a desktop session is running.");
         return 4;
     }
     app::g_main_thread = SDL_GetCurrentThreadID();
@@ -324,44 +322,43 @@ int main(int argc, char** argv) {
 
     if (relaunched && !logx::kVerbose) LOGR("Relaunched: %s", IMAGE_XBE);
     else app::LogSystem();
-    LOGR("Shaolin Monks Recomp version: %s", SHAOLIN_RECOMP_VERSION);
+    LOGR("OpenShao version: %s", OPENSHAO_RECOMP_VERSION);
 
     app::GameFiles game;
     if (!app::FindGame(game)) return 3;
-    if (shaolin::options.validate_language_pack) {
-        const auto& stats = shaolin::language::Statistics();
+    if (openshao::options.validate_language_pack) {
+        const auto& stats = openshao::language::Statistics();
         std::printf("{\"language_pack_valid\":true,\"direct_loading\":true,\"resources\":%u,\"voice_names\":%u,\"voice_occurrences\":%u,\"movies\":%u}\n",
                     stats.archive.resources, stats.archive.voice_names, stats.archive.voice_occurrences, stats.movies);
         return 0;
     }
-    if (shaolin::options.validate_disc) {
+    if (openshao::options.validate_disc) {
         std::printf("{\"valid\":true}\n");
         return 0;
     }
 
     const SDL_WindowFlags flags = SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIDDEN;
-    app::g_window = SDL_CreateWindow("Shaolin Monks Recomp", 1280, 720, flags);
+    app::g_window = SDL_CreateWindow("OpenShao", 1280, 720, flags);
     if (!app::g_window) {
-        // without Vulkan support in the window system the null renderer still runs diagnostics
-        app::g_window = SDL_CreateWindow("Shaolin Monks Recomp", 1280, 720, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIDDEN);
+        app::g_window = SDL_CreateWindow("OpenShao", 1280, 720, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIDDEN);
         if (!app::g_window) {
             LOGE("Cannot create the game window: %s", SDL_GetError());
-            shaolin::paths::ReportError(L"The game window could not be created.");
+            openshao::paths::ReportError(L"The game window could not be created.");
             return 4;
         }
     }
     if (app::Instance())
-        SDL_SetWindowTitle(app::g_window, ("Shaolin Monks Recomp [" + std::to_string(app::Instance()) + "]").c_str());
+        SDL_SetWindowTitle(app::g_window, ("OpenShao [" + std::to_string(app::Instance()) + "]").c_str());
 
-    if (!shaolin::options.background || shaolin::options.virtual_gamepads) input::Init();
+    if (!openshao::options.background || openshao::options.virtual_gamepads) input::Init();
     linux_input::Window(app::g_window);
     if (app::kGame.window) app::kGame.window(app::g_window);
     std::wstring hdd = app::Instance() > 1 ? L"hdd" + std::to_wstring(app::Instance()) : L"hdd";
     std::filesystem::path save_directory;
-    shaolin::storage::DirectoryLock save_lock;
-    if (!shaolin::OpenSaveDirectory(hdd, save_directory, save_lock)) return 6;
+    openshao::storage::DirectoryLock save_lock;
+    if (!openshao::OpenSaveDirectory(hdd, save_directory, save_lock)) return 6;
     if (!kernel::Boot(std::move(game.xbe), IMAGE_XBE, game.dir.string(), save_directory.string())) {
-        shaolin::paths::ReportError(L"The game failed to start.");
+        openshao::paths::ReportError(L"The game failed to start.");
         return 1;
     }
 
@@ -372,8 +369,7 @@ int main(int argc, char** argv) {
             do HandleEvent(e, running);
             while (running && SDL_PollEvent(&e));
         }
-        // the Windows host drives this from an 8 ms timer on the window thread
-        shaolin::controller::Update();
+        openshao::controller::Update();
     }
     logx::Flush();
     kernel::Shutdown(0);

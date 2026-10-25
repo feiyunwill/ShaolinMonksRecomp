@@ -2,7 +2,7 @@
 #include <filesystem>
 #include <string>
 
-namespace shaolin::paths {
+namespace openshao::paths {
 // The locator stays in the OS default data folder, even after data is moved.
 struct Locations {
     std::filesystem::path data, saves;

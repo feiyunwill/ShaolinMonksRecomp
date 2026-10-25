@@ -6,7 +6,7 @@
 #include <sstream>
 #include <vector>
 namespace fs = std::filesystem;
-namespace shaolin::paths {
+namespace openshao::paths {
 namespace {
 fs::path Normal(const fs::path& path) { return fs::weakly_canonical(fs::absolute(path)); }
 bool Same(const fs::path& a, const fs::path& b) { return files::Within(a, b) && files::Within(b, a); }

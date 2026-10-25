@@ -27,7 +27,7 @@ def main():
     args = parser.parse_args()
     folder = args.output.resolve() / str(time.time_ns())
     folder.mkdir(parents=True)
-    exe = folder / 'ShaolinMonks.exe'
+    exe = folder / 'OpenShao.exe'
     shutil.copy2(args.exe.resolve(), exe)
     (folder / 'runtime-data').mkdir()
     config = 'language = "' + args.language + '"\n'
@@ -37,10 +37,10 @@ def main():
     disc = args.disc.resolve()
     media_stat = disc.stat()
     environment = os.environ.copy()
-    environment.update(XBE_CAPTURE_DIR='captures', SHAOLIN_CAPTURE_HUD='1',
-                       SHAOLIN_CAPTURE_NATIVE_PIXELS='1',
-                       SHAOLIN_CAPTURE_RENDER_PERCENT=str(args.scale))
-    environment.pop('SHAOLIN_CAPTURE_MENU_LAYERS', None)
+    environment.update(XBE_CAPTURE_DIR='captures', OPENSHAO_CAPTURE_HUD='1',
+                       OPENSHAO_CAPTURE_NATIVE_PIXELS='1',
+                       OPENSHAO_CAPTURE_RENDER_PERCENT=str(args.scale))
+    environment.pop('OPENSHAO_CAPTURE_MENU_LAYERS', None)
     user = ctypes.WinDLL('user32', use_last_error=True)
     callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
     user.EnumWindows.argtypes = [callback_type, wintypes.LPARAM]
@@ -66,7 +66,7 @@ def main():
                     visible.append(int(window))
                 name = ctypes.create_unicode_buffer(256)
                 user.GetClassNameW(window, name, len(name))
-                if name.value == 'ShaolinMonksRecomp':
+                if name.value == 'OpenShao':
                     hwnd = window
             return True
 
